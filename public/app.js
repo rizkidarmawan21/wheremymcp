@@ -10,7 +10,7 @@ let noticeTimer;
 const pages = {
   overview: ['Gateway overview', 'Your gateway state and recent policy decisions.'],
   upstreams: ['MCP servers', 'Register remote servers, discover tools, then explicitly approve the server and its tools.'],
-  tools: ['Tool review', 'Review server-provided metadata as untrusted content. Classify risk before granting access.'],
+  tools: ['Tool review', 'Auto approve tools from trusted MCP servers in bulk, or review individual tools here. Then choose which tools a client profile can use.'],
   connections: ['Connections', 'Keep account identities and credentials distinct. Tool grants stay bound to stable connection IDs.'],
   profiles: ['Profiles & grants', 'A profile decides which tools an agent client can use. Allow only the tools it needs; everything else stays blocked.'],
   clients: ['Agent clients', 'Issue a separate profile-bound token for each client. Tokens appear only once.'],
@@ -73,7 +73,10 @@ async function api(path, method = 'GET', body) {
     if (authenticated && (response.status === 401 || (response.status === 403 && data.message === 'Owner session required'))) {
       authenticated = false; csrf = ''; closeDialog(); shell(false); showLogin();
     }
-    throw new Error(`${data.message || data.error || `Request failed (${response.status})`}${data.request_id ? ` · Request ${data.request_id}` : ''}`);
+    const error = new Error(`${data.message || data.error || `Request failed (${response.status})`}${data.request_id ? ` · Request ${data.request_id}` : ''}`);
+    error.status = response.status;
+    error.retryAfterMs = Math.max(1000, Math.min(60000, (Number(response.headers.get('retry-after')) || 1) * 1000));
+    throw error;
   }
   return data;
 }
@@ -310,11 +313,10 @@ function eventsView(events, compact = false) {
 function gettingStarted(counts) {
   const n = key => Number(counts[key] || 0);
   const steps = [
-    ['Connect an account', '#connections', n('connections') > 0, 'Add one credential or OAuth account. Server tools run under this identity, so tool grants stay bound to one account.'],
-    ['Register the MCP server', '#upstreams', n('upstreams') > 0, 'Point the gateway at the remote MCP endpoint and select the account it uses, if any.'],
-    ['Approve its tools', '#tools', n('tools') > 0, `${n('tools')} discovered. Open Tool review to check each tool, assign risk and enable it. Quarantined or pending metadata stays unavailable.`],
-    ['Create a profile with grants', '#profiles', n('profiles') > 1 || n('clients') > 0, 'Default profile exists. Create one per client, or grant tools to the default profile. Write and delete also need one-use approvals.'],
-    ['Issue a client token', '#clients', n('clients') > 0, 'Give each agent application its own token bound to one profile.']
+    ['Register an MCP server', '#upstreams', n('upstreams') > 0, 'Add its MCP URL. Select an account only if that server needs credentials.'],
+    ['Enable its tools', '#upstreams', n('enabled_tools') > 0, 'Use Auto approve tools for servers you trust. Select multiple servers to handle them together; manual Tool review is optional.'],
+    ['Choose access in Default', '#profiles', n('grants') > 0, 'Open Default, choose tools by MCP server or Select all available, then Save access. No new profile is required.'],
+    ['Issue a client token', '#clients', n('active_clients') > 0, 'Choose Default, save the token and copy the configuration into your agent application.']
   ];
   if (steps.every(step => step[2])) return null;
   return section('Getting started', p('The order below is the shortest path to your first successful client tool call. Steps marked Done are based on this instance\'s real state.', 'hint'), el('ol', {class: 'steps'}, steps.map(([label, hash, done, hint], index) => {
@@ -337,49 +339,101 @@ function registryInventory(counts) {
 async function stopControl(enabled) {
   await confirmAction(enabled ? 'Stop gateway calls' : 'Resume gateway calls', enabled ? 'Deny all agent tool calls immediately. Owner access stays available so you can inspect and repair policy.' : 'Allow agent calls again under the current grants, approvals and connection policy.', () => api('/api/v1/emergency-stop', 'POST', {enabled}), enabled ? 'Stop all calls' : 'Resume calls');
 }
+async function autoApproveServers(servers) {
+  if (!servers.length) { notify('Select at least one MCP server.'); return; }
+  const progress = p('', 'hint'); progress.setAttribute('role', 'status');
+  modal('Auto approve tools', p(`Trust ${servers.length === 1 ? servers[0].name : `${servers.length} selected MCP servers`} and enable their currently advertised tools. This refreshes discovery, approves the servers and replaces tool classifications using their metadata.`), p('Read-only hint: Read. Destructive hint: Delete. Missing or unclear hints: Write. Write/delete calls still require one-use approval. Future metadata changes remain quarantined.', 'hint'), form([{name: 'trust_server', label: 'I trust the selected servers to describe their tools', type: 'checkbox', required: true}], 'Auto approve tools', async data => {
+    const results = []; let next = 0, completed = 0;
+    progress.textContent = `Processing 0 of ${servers.length} servers…`;
+    await Promise.all(Array.from({length: Math.min(4, servers.length)}, async () => {
+      while (next < servers.length) {
+        const server = servers[next++];
+        try {
+          let result;
+          try { result = await api(idPath('upstreams', server.id, '/auto-approve-tools'), 'POST', data); }
+          catch (error) {
+            if (error.status !== 429) throw error;
+            progress.textContent = `Rate limit reached. Waiting ${Math.ceil(error.retryAfterMs / 1000)} seconds, then continuing (${completed} of ${servers.length} complete).`;
+            await new Promise(resolve => setTimeout(resolve, error.retryAfterMs));
+            result = await api(idPath('upstreams', server.id, '/auto-approve-tools'), 'POST', data);
+          }
+          results.push({server, result});
+        } catch (error) { results.push({server, error: error.message}); }
+        completed++; progress.textContent = `Processed ${completed} of ${servers.length} servers.`;
+      }
+    }));
+    if (!authenticated) return;
+    const failed = results.filter(item => item.error), enabled = results.reduce((sum, item) => sum + (item.result?.approved || 0), 0);
+    await route();
+    modal('Tool approval results', p(`Enabled ${enabled} tools across ${servers.length - failed.length} servers.`), failed.length ? section('Servers needing attention', failed.map(item => p(`${item.server.name}: ${item.error}`, 'error'))) : null, p('Next: open Default in Profiles & grants, select tools by server or Select all available, then Save access.', 'hint'), actions(action('Choose client tool access', () => { closeDialog(); location.hash = 'profiles'; }), action('Done', closeDialog)));
+  }), progress);
+}
+function reviewTool(tool) {
+  formModal(`Enable tool: ${tool.name}`, [{name: 'risk', label: 'Tool behavior', type: 'select', required: true, value: ['read', 'write', 'delete'].includes(tool.risk) ? tool.risk : '', options: [{value: '', label: 'Choose what this tool can do'}, {value: 'read', label: 'Read only: search, list or view data'}, {value: 'write', label: 'Write: create, edit, send or run'}, {value: 'delete', label: 'Delete: remove data'}]}], 'Enable tool', data => api(idPath('tools', tool.id, '/approve'), 'POST', {...data, enabled: true}), 'Choose based on what this tool actually does. Read runs without per-call approval; Write and Delete require one-use approval. Enabling makes the tool available for profile selection.');
+}
 async function editGrants(profileRow, tools, connections) {
   const profile = await api(idPath('profiles', profileRow.id));
-  const grants = profile.grants || profile.profile?.grants || [];
+  const grants = new Map((profile.grants || profile.profile?.grants || []).map(grant => [grant.tool_id, grant]));
+  const accounts = new Map(connections.map(connection => [connection.id, connection.alias]));
   const selected = new Map(), entries = [], groups = new Map();
+  const singleServer = new Set(tools.map(tool => tool.upstream_id)).size === 1;
   const count = p('', 'hint'); count.setAttribute('aria-live', 'polite');
   const error = p('', 'error'); error.setAttribute('role', 'alert');
   const search = el('input', {type: 'search', placeholder: 'Search tools, servers or accounts', 'aria-label': 'Search tools'});
   const list = el('div', {class: 'grant-list'}), noMatches = empty('No tools match this search.'); noMatches.hidden = true;
-  const updateCount = () => { count.textContent = `${selected.size} tool${selected.size === 1 ? '' : 's'} allowed. Uncheck to remove access.`; };
+  const updateCount = () => {
+    count.textContent = `${selected.size} tools selected. Save to apply.`;
+    for (const group of groups.values()) {
+      const chosen = group.entries.filter(item => item.checkbox.checked).length;
+      const available = group.entries.filter(item => item.available);
+      group.checkbox.checked = available.length ? available.every(item => item.checkbox.checked) : chosen > 0;
+      group.checkbox.indeterminate = chosen > 0 && !group.checkbox.checked;
+      group.checkbox.disabled = !group.entries.some(item => item.available || item.checkbox.checked);
+      group.summary.textContent = `Show ${group.entries.length} tools (${chosen} selected)`;
+    }
+  };
   for (const tool of [...tools].sort((a, b) => String(a.upstream_name || '').localeCompare(String(b.upstream_name || '')) || String(a.name).localeCompare(String(b.name)))) {
-    const existing = grants.find(grant => grant.tool_id === tool.id);
+    const existing = grants.get(tool.id);
     const retained = existing && existing.action_class === tool.risk && (existing.connection_id || null) === (tool.connection_id || null);
     const available = !!tool.enabled && ['read', 'write', 'delete'].includes(tool.risk) && (!tool.upstream_status || tool.upstream_status === 'active') && tool.approved_fingerprint === tool.fingerprint;
-    const name = tool.name || 'Unnamed tool';
-    const account = connections.find(connection => connection.id === tool.connection_id)?.alias || (tool.connection_id ? 'Account unavailable' : 'No account required');
-    const checkbox = el('input', {type: 'checkbox', 'aria-label': `Allow ${name}`, disabled: !available && !retained}); checkbox.checked = !!retained;
+    const name = tool.name || 'Unnamed tool', account = accounts.get(tool.connection_id) || (tool.connection_id ? 'Account unavailable' : 'No account required');
+    const checkbox = el('input', {type: 'checkbox', 'aria-label': `Allow ${name}`, disabled: !available && !retained, 'aria-describedby': `grant-info-${tool.id}`}); checkbox.checked = !!retained;
     if (retained) selected.set(tool.id, tool);
-    const reason = !available ? 'Unavailable until the tool and server are reviewed and enabled.' : tool.risk === 'read' ? 'Can view data.' : 'Can change data. Each call also needs your one-use approval.';
-    checkbox.setAttribute('aria-describedby', `grant-info-${tool.id}`);
+    const reason = !available ? 'Not enabled yet. Use Auto approve tools in MCP servers, or review this tool manually.' : tool.risk === 'read' ? 'Can view data.' : 'Can change data. Each call also needs your one-use approval.';
     const info = el('div', {class: 'grant-copy', id: `grant-info-${tool.id}`}, el('strong', {}, name), p(tool.description || 'No description supplied by this server.', 'grant-description'), p(`${account} · ${reason}`, 'hint'), existing && !retained ? p('Previous access no longer matches this tool or account. Saving removes that outdated grant.', 'error') : null);
     const entry = el('div', {class: 'grant-entry'}, el('label', {class: 'grant-toggle'}, checkbox, info), el('span', {class: 'status'}, {read: 'Read only', write: 'Write', delete: 'Delete'}[tool.risk] || 'Needs review'));
     checkbox.addEventListener('change', () => { if (checkbox.checked) selected.set(tool.id, tool); else selected.delete(tool.id); updateCount(); });
     const groupKey = tool.upstream_id || tool.upstream_name || 'unknown';
-    if (!groups.has(groupKey)) { const group = el('section', {class: 'grant-group'}, el('h3', {}, tool.upstream_name || 'MCP server')); groups.set(groupKey, group); list.append(group); }
-    const group = groups.get(groupKey); group.append(entry);
-    entries.push({entry, checkbox, group, text: `${name} ${tool.description || ''} ${tool.upstream_name || ''} ${account}`.toLowerCase()});
+    if (!groups.has(groupKey)) {
+      const serverName = tool.upstream_name || 'MCP server', groupCheck = el('input', {type: 'checkbox', 'aria-label': `Allow all tools from ${serverName}`}), summary = el('summary'), content = el('div');
+      const disclosure = el('details', {open: singleServer}, summary, content);
+      const group = {node: el('section', {class: 'grant-group'}, el('label', {class: 'check-label grant-server'}, groupCheck, el('strong', {}, serverName)), disclosure), content, checkbox: groupCheck, disclosure, summary, entries: []};
+      groupCheck.addEventListener('change', () => {
+        for (const item of group.entries) { if (!groupCheck.checked || item.available) { item.checkbox.checked = groupCheck.checked; if (groupCheck.checked) selected.set(item.tool.id, item.tool); else selected.delete(item.tool.id); } }
+        updateCount();
+      });
+      groups.set(groupKey, group); list.append(group.node);
+    }
+    const group = groups.get(groupKey), item = {entry, checkbox, group, available, tool, text: `${name} ${tool.description || ''} ${tool.upstream_name || ''} ${account}`.toLowerCase()};
+    group.content.append(entry); group.entries.push(item); entries.push(item);
   }
   search.addEventListener('input', () => {
     const query = search.value.toLowerCase().trim();
     for (const item of entries) item.entry.hidden = !item.text.includes(query);
-    for (const group of groups.values()) group.hidden = !entries.some(item => item.group === group && !item.entry.hidden);
+    for (const group of groups.values()) { group.node.hidden = !group.entries.some(item => !item.entry.hidden); group.disclosure.open = !!query || singleServer; }
     noMatches.hidden = entries.some(item => !item.entry.hidden);
   });
   updateCount();
+  const selectAll = action('Select all available', () => { for (const item of entries) if (item.available) { item.checkbox.checked = true; selected.set(item.tool.id, item.tool); } updateCount(); }); selectAll.disabled = !entries.some(item => item.available);
   const clear = action('Clear selection', () => { selected.clear(); for (const item of entries) item.checkbox.checked = false; updateCount(); });
   const save = action('Save access', async () => {
     error.textContent = '';
-    try {
-      await api(idPath('profiles', profileRow.id, '/grants'), 'PUT', {grants: [...selected.values()].map(tool => ({tool_id: tool.id, connection_id: tool.connection_id || null, action_class: tool.risk}))});
-      closeDialog(); await route(); notify('Tool access saved. Client permissions updated.');
-    } catch (err) { error.textContent = err.message; }
+    if (selected.size > 5000) { error.textContent = 'A profile can contain up to 5000 tools. Choose fewer servers or tools.'; return; }
+    try { await api(idPath('profiles', profileRow.id, '/grants'), 'PUT', {grants: [...selected.values()].map(tool => ({tool_id: tool.id, connection_id: tool.connection_id || null, action_class: tool.risk}))}); closeDialog(); await route(); notify('Tool access saved. Client permissions updated.'); }
+    catch (err) { error.textContent = err.message; }
   }, 'primary');
-  modal(`Tool access: ${profileRow.name}`, p('Checked tools are allowed for clients using this profile. Uncheck a tool to remove its access. Changes apply when you save.', 'hint'), tools.length ? el('div', {class: 'grant-search'}, search, clear) : null, tools.length ? list : empty('No tools discovered yet. Add an MCP server and review its tools first.'), noMatches);
+  const locked = entries.filter(item => !item.available).length;
+  modal(`Tool access: ${profileRow.name}`, p('Choose entire MCP servers below, or Select all available. Expand a server only when you want to pick individual tools. Changes apply when you save.', 'hint'), locked ? el('div', {class: 'access-help'}, p(`${locked} tools are not enabled yet. Auto approve them in MCP servers, then return here.`), action('Enable server tools', () => { closeDialog(); location.hash = 'upstreams'; })) : null, tools.length ? el('div', {class: 'grant-search'}, search, selectAll, clear) : null, tools.length ? list : empty('No tools discovered yet. Add an MCP server first.'), noMatches);
   dialog.classList.add('grants-dialog');
   dialog.append(el('div', {class: 'dialog-footer'}, count, error, actions(action('Cancel', closeDialog), save)));
 }
@@ -408,10 +462,16 @@ const renderers = {
     heading(target, 'upstreams', action('Register server', add, 'primary'), action('Refresh list', route, '', 'refresh'));
     const rows = listOf(result, 'upstreams');
     if (!rows.length) target.append(empty('No MCP servers registered. Register a remote MCP endpoint to discover its tools.'));
+    const selected = new Map(), checkboxes = [];
+    const all = el('input', {type: 'checkbox', 'aria-label': 'Select all servers'}), selection = p('0 servers selected.', 'hint');
+    const approveSelected = action('Auto approve selected servers', () => autoApproveServers([...selected.values()])); approveSelected.disabled = true;
+    const updateSelection = () => { all.checked = selected.size === rows.length && rows.length > 0; all.indeterminate = selected.size > 0 && selected.size < rows.length; approveSelected.disabled = selected.size === 0; selection.textContent = `${selected.size} servers selected.`; };
+    all.addEventListener('change', () => { for (const item of checkboxes) { item.checkbox.checked = all.checked; if (all.checked) selected.set(item.row.id, item.row); else selected.delete(item.row.id); } updateSelection(); });
+    if (rows.length) target.append(el('div', {class: 'bulk-toolbar'}, el('label', {class: 'check-label'}, all, 'Select all servers'), selection, approveSelected, el('a', {href: '#profiles'}, 'Next: choose client tool access')));
     for (const row of rows) {
       const connection = listOf(connections, 'connections').find(c => c.id === row.connection_id);
       const item = summaryRow(row.name, row.status, [row.url, connection ? `Account: ${connection.alias}` : 'No account credentials', `Timeout: ${row.timeout_ms} ms`],
-        action('Refresh tools', async () => { await api(idPath('upstreams', row.id, '/refresh'), 'POST'); await route(); notify('Discovery refreshed. Review metadata changes in Tool review.'); }, '', 'refresh'),
+        action('Refresh tools', async () => { await api(idPath('upstreams', row.id, '/refresh'), 'POST'); await route(); notify('Discovery refreshed. Auto approve trusted tools or review them individually.'); }),
         action('Edit server', () => formModal('Edit MCP server', [
           {name: 'name', label: 'Server name', required: true, value: row.name},
           {name: 'url', label: 'Remote MCP URL', type: 'url', required: true, value: row.url, hint: 'Changing the URL requires a Discovery refresh; then re-approve the tools.'},
@@ -422,29 +482,45 @@ const renderers = {
           if (data.allowed_private_ips !== undefined && (!Array.isArray(data.allowed_private_ips) || data.allowed_private_ips.some(ip => typeof ip !== 'string' || /[/*]/.test(String(ip))))) throw new Error('Local exceptions must be a JSON array of exact IP address strings.');
           return api(idPath('upstreams', row.id), 'PATCH', data);
         }), '', 'pencil'),
-        action('Approve server', row.status === 'active' ? null : () => confirmAction('Approve server', 'Approve this upstream for routing. Each tool still needs explicit risk review and a profile grant.', () => api(idPath('upstreams', row.id, '/approve'), 'POST'), 'Approve server'), '', 'check'),
+        action('Approve server', row.status === 'active' ? null : () => confirmAction('Approve server', 'Approve this upstream for routing. Each tool still needs explicit risk review and a profile grant.', () => api(idPath('upstreams', row.id, '/approve'), 'POST'), 'Approve server')),
         action('Disable', row.status === 'active' ? () => confirmAction('Disable server', 'Client tool calls to this server will be denied.', () => api(idPath('upstreams', row.id, '/disable'), 'POST'), 'Disable server') : null, 'danger', 'power'),
         action('Delete', () => confirmAction('Delete server', 'Deletes this server permanently, including all of its discovered tools, profile grants and pending approvals for those tools.', () => api(idPath('upstreams', row.id), 'DELETE'), 'Delete server'), 'danger', 'trash'));
+      const checkbox = el('input', {type: 'checkbox', 'aria-label': `Select server ${row.name}`});
+      checkbox.addEventListener('change', () => { if (checkbox.checked) selected.set(row.id, row); else selected.delete(row.id); updateSelection(); });
+      checkboxes.push({row, checkbox}); const title = item.querySelector('.row-head > div'); title.classList.add('server-select-title'); title.prepend(checkbox);
+      item.querySelector('.actions').prepend(action('Auto approve tools', () => autoApproveServers([row])));
       if (row.allowed_private_ips?.length) item.append(p(`Explicit local addresses: ${row.allowed_private_ips.join(', ')}`, 'hint'));
       target.append(item);
     }
   },
   async tools(target) {
     const result = await api('/api/v1/tools');
-    heading(target, 'tools', action('Refresh list', route, '', 'refresh'));
-    const rows = listOf(result, 'tools');
-    if (!rows.length) target.append(empty('No discovered tools. Register a server and refresh its tool list first.'));
-    for (const row of rows) {
+    heading(target, 'tools', el('a', {href: '#upstreams'}, 'Auto approve MCP servers'), el('a', {href: '#profiles'}, 'Next: choose tool access'), action('Refresh list', route, '', 'refresh'));
+    const allRows = listOf(result, 'tools');
+    if (!allRows.length) { target.append(empty('No discovered tools. Register a server and use Auto approve tools to get started.')); return; }
+    const search = el('input', {type: 'search', 'aria-label': 'Search tools', placeholder: 'Search tool names or descriptions'});
+    const servers = el('select', {'aria-label': 'Filter tools by server'}, el('option', {value: ''}, 'All MCP servers'), [...new Map(allRows.map(tool => [tool.upstream_id, tool.upstream_name || 'MCP server']))].map(([id, name]) => el('option', {value: id}, name)));
+    const results = el('div'), count = p('', 'hint'); count.setAttribute('role', 'status'); let visible = 50;
+    const more = action('Show 50 more tools', () => { visible += 50; render(); });
+    function render() {
+      const query = search.value.toLowerCase().trim();
+      const matching = allRows.filter(tool => (!servers.value || tool.upstream_id === servers.value) && `${tool.name} ${tool.description || ''}`.toLowerCase().includes(query));
+      results.replaceChildren(); count.textContent = `Showing ${Math.min(visible, matching.length)} of ${matching.length} tools.`; more.hidden = matching.length <= visible;
+      if (!matching.length) results.append(empty('No tools match these filters.'));
+      for (const row of matching.slice(0, visible)) {
       const drifted = row.approved_fingerprint && row.fingerprint !== row.approved_fingerprint;
       const status = drifted ? 'Metadata drift: quarantined' : row.enabled ? `Approved ${row.risk}` : row.upstream_status === 'disabled' ? 'Upstream disabled' : 'Pending review';
-      const item = summaryRow(row.name || 'Unnamed tool', status, [`Upstream: ${row.upstream_name || row.upstream_id}`, row.upstream_status && row.upstream_status !== 'active' ? `Upstream state: ${row.upstream_status}` : '', `Tool: ${row.name}`], action('Review risk & access', () => formModal('Approve tool policy', [{name: 'risk', label: 'Owner-assigned risk', type: 'select', required: true, value: ['read', 'write', 'delete'].includes(row.risk) ? row.risk : '', options: [{value: '', label: 'Choose risk after reviewing this tool'}, 'read', 'write', 'delete']}, {name: 'enabled', label: 'Enable this exact tool metadata', type: 'checkbox', value: !!row.enabled}], 'Save approval', data => api(idPath('tools', row.id, '/approve'), 'POST', data), 'Do not trust a server-provided read-only claim. Write and delete tools need explicit grants plus one-use approval.'), '', 'pencil'));
+      const item = summaryRow(row.name || 'Unnamed tool', status, [`Server: ${row.upstream_name || 'MCP server'}`, row.upstream_status && row.upstream_status !== 'active' ? `Server state: ${row.upstream_status}` : ''], action('Review tool', () => reviewTool(row)), row.enabled ? action('Disable tool', () => confirmAction('Disable tool', 'Clients lose access to this tool until it is enabled again.', () => api(idPath('tools', row.id, '/approve'), 'POST', {risk: row.risk, enabled: false}), 'Disable tool'), 'danger') : null);
       item.append(p(row.description || 'No description supplied.', 'muted'), details('Current schema, annotations & fingerprint', p('Gateway identifier', 'hint'), code(row.gateway_name), p(`Current fingerprint: ${row.fingerprint || 'Unavailable'}`, 'mono'), p(`Approved fingerprint: ${row.approved_fingerprint || 'Not approved'}`, 'mono'), code({input_schema: row.input_schema, annotations: row.annotations})));
       if (drifted) {
         const previous = typeof row.previous_metadata === 'string' ? JSON.parse(row.previous_metadata) : row.previous_metadata;
         item.append(section('Metadata changed since approval', p('Calls remain quarantined until the current metadata is explicitly approved.'), previous ? el('div', {class: 'split'}, el('div', {}, el('h3', {}, 'Previously approved'), code(previous)), el('div', {}, el('h3', {}, 'Current discovery'), code({description: row.description, input_schema: row.input_schema, annotations: row.annotations, fingerprint: row.fingerprint}))) : p('The previous schema snapshot is unavailable. Compare the approved and current fingerprints above, then inspect the current metadata before approving.')));
       }
-      target.append(item);
+      results.append(item);
+      }
     }
+    for (const input of [search, servers]) input.addEventListener('input', () => { visible = 50; render(); });
+    target.append(el('div', {class: 'toolbar'}, search, servers), count, results, more); render();
   },
   async connections(target) {
     const result = await api('/api/v1/connections');

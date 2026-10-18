@@ -11,7 +11,7 @@ The dashboard is a same-origin HTML/CSS/ES-module application served by the Fast
 | MCP servers | Register endpoint and account binding; exact local-IP exception array; bounded timeout; refresh discovery; approve server; disable routing. |
 | Tool review | Show escaped description, input schema, annotations and fingerprint; compare approved and current metadata side by side after drift; review risk and enable the exact metadata. |
 | Connections | Account alias and identity; API key, bearer, GitHub, Google, Slack or remote MCP OAuth connection; secret replacement; scope disclosure; BYO OAuth client configuration and provider authorization handoff; revoke. |
-| Profiles and grants | Create or clone a profile; choose tools by readable names grouped by server, search names/accounts, uncheck individual access or clear the selection, then save. Review-required tools remain unavailable. Delete custom profiles; explicitly choose replacement access for their clients before deletion. The built-in default remains, with editable tool access. |
+| Profiles and grants | Create or clone a profile; select an entire MCP server, all available tools, or individual tools. Search names/accounts, uncheck access or clear the selection, then save. Review-required tools remain unavailable. Delete custom profiles; explicitly choose replacement access for their clients before deletion. The built-in default remains, with editable tool access. |
 | Agent clients | Separate profile-bound token per application; optional expiry; token shown once; rotate and revoke; generate and copy environment-variable config for Codex, Claude, Cursor, Gemini, Hermes or generic clients. Hermes/generic output is explicitly transport guidance. |
 | One-use approvals | Select client and reviewed write/delete tool; inspect exact JSON argument object and lifetime; return the one-use approval ID for `_meta.wheremymcp_approval_id`. |
 | Reviewed skills | Enter file map or source reference; preview every imported file; import unapproved; inspect stored files; approve or delete. CLI sync remains an explicit dry-run/apply operation. |
@@ -115,3 +115,16 @@ Use **Edit tool access**, check the tools a client needs, and choose **Save acce
 A custom profile can be deleted. If clients use it, the confirmation requires a replacement profile and explains the immediate permission change. Client tokens remain valid and use the replacement profile; revoked clients remain revoked. Pending approvals are cleared, and the removed profile's grants are deleted without being copied into the replacement. The built-in Default profile cannot be deleted; clearing its access blocks all tools for its clients.
 
 The browser regression uses 30 tools, including a long name and an unreviewed tool. It verifies modal boundaries and visible save controls at 1280px and 390px in both themes, search, grant removal, clearing all access, deleting unused profiles, and explicit client reassignment before deleting a bound profile.
+
+## Setup without per-tool review
+
+1. Register the MCP URLs and select account connections where needed.
+2. In **MCP servers**, select multiple servers or **Select all servers**, then **Auto approve selected servers**. Confirm that you trust those servers to describe their current tools. Discovery and approval run as one batch with progress and per-server failure results.
+3. In **Profiles & grants**, use **Default → Edit tool access**. Select whole server groups or **Select all available**, then **Save access**. Groups start collapsed for multiple servers, so a large registry does not present thousands of open rows.
+4. In **Agent clients**, issue a token using Default and copy the client configuration.
+
+Manual review remains available for a classification override. Its behavior choices describe view/search/list, create/edit/send/run, and deletion. **Enable tool** both saves the classification and enables profile selection; no separate enable checkbox is required. Manual review filters by server and search, rendering 50 tools at a time.
+
+Getting started uses enabled, fingerprint-matched tools and valid grants, rather than treating discovery or the existence of a client as completed permission setup. Account connections are optional when the MCP server needs no credentials.
+
+The scale browser test registers **50 MCP entries against one authenticated local MCP fixture**, discovers **50 tools each**, auto approves the **2500 tools** in one selected-server batch, saves 50 grants through one server checkbox and 2500 grants through Select all available, and lists 2500 tools through an actual SDK client. It also exercises rate-limit recovery during a burst of earlier owner operations. Evidence: [scale result](evidence/bulk-setup-scale.json), [desktop](evidence/bulk-access-1280.png), [mobile](evidence/bulk-access-390.png).

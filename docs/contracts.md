@@ -73,3 +73,13 @@ Root creates these tables in `src/core.ts` before workers run. All opaque IDs ar
 - `GET /api/v1/skills` returns `{skills}`; `POST /api/v1/skills` body `{name,source,files:{'SKILL.md':'...'}}`.
 - `POST /api/v1/skills/:id/approve`; `DELETE /api/v1/skills/:id`.
 - CLI: `init`, `backup`, `restore`, `rotate-key`, `skills plan`, `skills sync`. No restore over a running process or nonempty destination. Skill sync requires an explicit target root, dry-run preview and explicit apply; never execute content.
+
+## Bulk server tool approval
+
+`POST /api/v1/upstreams/:id/auto-approve-tools` requires the owner session, CSRF protection and body `{trust_server:true}`. It performs live discovery, approves only currently advertised tools, and activates that server. Explicit destructive hints map to Delete, explicit read-only hints to Read, and missing/unclear hints to Write. Destructive wins if both hints are set. Existing classifications for current tools are replaced only by this explicit owner action.
+
+Approval, fingerprint pinning, pending-approval invalidation, server activation and audit records are committed in one transaction per server. Changed server configuration during discovery aborts approval. No profile grant is created or changed. Removed tools stay disabled. Later discovery still quarantines changed metadata; no permanent automatic trust mode is stored.
+
+The dashboard processes selected servers with four concurrent requests and reports partial failures. Only an explicit HTTP 429 rejection can trigger one retry after `Retry-After`; upstream tool calls are never retried by this flow. The registry limit is 128 servers, discovery is bounded to 256 tools per server, and each profile accepts at most 5000 exact grants.
+
+MCP tool listing joins current client, profile, grants, tools, servers and account state in one query per page. Refresh-required flags are cached only within that request, once per upstream; later requests recheck current policy. Tool-call authorization remains checked for each invocation.

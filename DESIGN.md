@@ -18,3 +18,5 @@ Direction authorized for implementation: a utility dashboard for the single owne
 - Accessibility: visible focus, native labels and dialog focus management, 44px interactive targets, wrapping code and rows, perceivable request and error states. Both themes use AA text pairings and strong field boundaries.
 
 - Tool access refinement: original tool names and descriptions lead each checkbox row, grouped by server. Search narrows long lists, and a fixed modal footer keeps the permission count, cancel and save available while the list scrolls. Internal gateway hashes stay in technical details. Visible profile delete controls explain required client reassignment; no client is silently assigned different access.
+
+- Bulk setup: server selection and one batch approval replace per-tool setup work for trusted MCPs. Permission groups collapse by server and expose group selection plus a global available-tools action. Manual review renders 50 filtered rows at a time. Progress, rate-limit waiting and partial failures stay visible; setup completion uses actual enabled tools and grants.

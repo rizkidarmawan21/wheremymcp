@@ -1,0 +1,10 @@
+{
+  "fixture": "50 registered MCP entries backed by one authenticated local MCP fixture",
+  "servers": 50,
+  "tools_per_server": 50,
+  "enabled_tools": 2500,
+  "saved_grants": 2500,
+  "sdk_visible_tools": 2500,
+  "bulk_concurrency": 4,
+  "elapsed_ms": 43730
+}

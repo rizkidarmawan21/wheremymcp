@@ -17,10 +17,11 @@ async function fixture(t:any) {
  CREATE TABLE tool(id TEXT PRIMARY KEY,upstream_id TEXT,name TEXT,gateway_name TEXT UNIQUE,description TEXT,input_schema TEXT,annotations TEXT,fingerprint TEXT,approved_fingerprint TEXT,risk TEXT,enabled INTEGER,previous_metadata TEXT,UNIQUE(upstream_id,name));
  CREATE TABLE profile_grant(profile_id TEXT,tool_id TEXT,connection_id TEXT,action_class TEXT,PRIMARY KEY(profile_id,tool_id));
  CREATE TABLE approval(id TEXT PRIMARY KEY,client_id TEXT,tool_id TEXT,arguments_hash TEXT,expires_at INTEGER,used_at INTEGER);`);
+ let annotations:Record<string,unknown>={readOnlyHint:true};let advertised=true;let beforeList:(()=>void)|undefined;
  let description='Echo';let calls=0;let delay=0;let replyText:string|undefined;let inputSchema:any={type:'object',properties:{text:{type:'string'}},required:['text'],additionalProperties:false};const authHeaders:string[]=[];const events:any[]=[];const settings=new Map();
  const handler=createMcpHandler(()=>{
   const server=new Server({name:'fake',version:'1'},{capabilities:{tools:{}}});
-  server.setRequestHandler('tools/list',()=>({tools:[{name:'echo',description,inputSchema,annotations:{readOnlyHint:true}}]}));
+  server.setRequestHandler('tools/list',()=>{const hook=beforeList;beforeList=undefined;hook?.();return {tools:advertised?[{name:'echo',description,inputSchema,annotations}]:[]};});
   server.setRequestHandler('tools/call',async req=>{calls++;if(delay)await new Promise(resolve=>setTimeout(resolve,delay));return {content:[{type:'text',text:replyText??String(req.params.arguments?.text)}]};});return server;
  });
  const nodeHandler=toNodeHandler(handler);const upstream=createServer((req,res)=>{authHeaders.push(req.headers.authorization??'');void nodeHandler(req,res);});
@@ -33,7 +34,7 @@ async function fixture(t:any) {
  const api=async(method:string,path:string,body?:any)=>{const res=await app.inject({method:method as any,url:path,headers:{'x-owner':'yes'},payload:body});assert.ok(res.statusCode<300,res.body);return res.json();};
  const add=async(connection_id?:string)=>{const {upstream:u}=await api('POST','/api/v1/upstreams',{name:'same-name',url:`http://127.0.0.1:${(upstream.address() as any).port}/mcp`,allowed_private_ips:['127.0.0.1'],connection_id});await api('POST',`/api/v1/upstreams/${u.id}/refresh`);await api('POST',`/api/v1/upstreams/${u.id}/approve`);return u;};
  const client=async(mode:any='auto')=>{const c=new Client({name:'test',version:'1'},{versionNegotiation:{mode}});await c.connect(new StreamableHTTPClientTransport(new URL(`http://127.0.0.1:${(app.server.address() as any).port}/mcp`),{requestInit:{headers:{authorization:'Bearer agent-secret'}}}));t.after(()=>c.close());return c;};
- return {db,app,hub,api,add,client,settings,events,authHeaders,setDelay:(n:number)=>{delay=n;},setReply:(s:string)=>{replyText=s;},setSchema:(schema:any)=>{inputSchema=schema;},getCalls:()=>calls,setDescription:(s:string)=>{description=s;}};
+ return {db,app,hub,api,add,client,settings,events,authHeaders,beforeNextList:(callback:()=>void)=>{beforeList=callback;},setAnnotations:(value:Record<string,unknown>)=>{annotations=value;},setAdvertised:(value:boolean)=>{advertised=value;},setDelay:(n:number)=>{delay=n;},setReply:(s:string)=>{replyText=s;},setSchema:(schema:any)=>{inputSchema=schema;},getCalls:()=>calls,setDescription:(s:string)=>{description=s;}};
 }
 
 test('official modern and legacy clients obey deny-default, namespace, fresh grants and drift quarantine',async t=>{
@@ -135,4 +136,35 @@ test('tool listing carries upstream name and status so review screens show exact
  const tools=(await f.api('GET','/api/v1/tools')).tools;
  assert.equal(tools[0].upstream_name,'same-name');
  assert.equal(tools[0].upstream_status,'active');
+});
+
+
+test('bulk tool approval requires owner trust, uses conservative hint classification, and never grants client access',async t=>{
+ const f=await fixture(t);const u=await f.add(),other=await f.add();const path=`/api/v1/upstreams/${u.id}/auto-approve-tools`;
+ assert.equal((await f.app.inject({method:'POST',url:path,payload:{trust_server:true}})).statusCode,403);
+ assert.equal((await f.app.inject({method:'POST',url:path,headers:{'x-owner':'yes'},payload:{}})).statusCode,400);
+ const result=await f.api('POST',path,{trust_server:true});assert.equal(result.approved,1);assert.equal(result.risk_counts.read,1);
+ let tool=(await f.api('GET','/api/v1/tools')).tools.find((tool:any)=>tool.upstream_id===u.id);
+ assert.equal(tool.enabled,1);assert.equal(tool.risk,'read');assert.equal(tool.approved_fingerprint,tool.fingerprint);
+ assert.equal(f.db.prepare('SELECT count(*) FROM profile_grant').pluck().get(),0);
+ assert.equal((await (await f.client()).listTools()).tools.length,0);
+ assert.equal((await f.api('GET','/api/v1/tools')).tools.find((tool:any)=>tool.upstream_id===other.id).enabled,0,'Other servers remain untouched');
+ f.setAnnotations({});await f.api('POST',path,{trust_server:true});tool=(await f.api('GET','/api/v1/tools')).tools.find((tool:any)=>tool.upstream_id===u.id);assert.equal(tool.risk,'write');
+ f.db.prepare('INSERT INTO profile_grant VALUES(?,?,NULL,?)').run('profile',tool.id,'write');
+ await assert.rejects((await f.client()).callTool({name:tool.gateway_name,arguments:{text:'needs-approval'}}));assert.equal(f.getCalls(),0);
+ f.setAnnotations({readOnlyHint:true,destructiveHint:true});await f.api('POST',path,{trust_server:true});assert.equal((await f.api('GET','/api/v1/tools')).tools.find((tool:any)=>tool.upstream_id===u.id).risk,'delete');
+ f.setDescription('Changed metadata');await f.api('POST',`/api/v1/upstreams/${u.id}/refresh`);assert.equal((await f.api('GET','/api/v1/tools')).tools.find((tool:any)=>tool.upstream_id===u.id).enabled,0,'Future changes still require explicit approval');
+ f.setAdvertised(false);assert.equal((await f.app.inject({method:'POST',url:path,headers:{'x-owner':'yes'},payload:{trust_server:true}})).statusCode,409);
+ assert.equal((await f.api('GET','/api/v1/tools')).tools.find((tool:any)=>tool.upstream_id===u.id).enabled,0,'Removed tools must never be resurrected by bulk approval');
+});
+
+
+test('bulk approval refuses stale discovery when the server configuration changes in flight',async t=>{
+ const f=await fixture(t),u=await f.add();
+ f.beforeNextList(()=>{f.db.prepare("UPDATE upstream SET url='https://example.com/changed',status='registered' WHERE id=?").run(u.id);f.settings.set('import_requires_refresh:'+u.id,'true');});
+ const response=await f.app.inject({method:'POST',url:`/api/v1/upstreams/${u.id}/auto-approve-tools`,headers:{'x-owner':'yes'},payload:{trust_server:true}});
+ assert.equal(response.statusCode,502);
+ assert.equal(f.settings.get('import_requires_refresh:'+u.id),'true');
+ assert.equal(f.db.prepare('SELECT count(*) FROM tool WHERE upstream_id=? AND enabled=1').pluck().get(u.id),0);
+ assert.equal(f.db.prepare('SELECT status FROM upstream WHERE id=?').pluck().get(u.id),'error');
 });

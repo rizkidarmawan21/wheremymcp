@@ -76,7 +76,7 @@ export async function registerGateway(app:FastifyInstance,hub:Hub,requireOwner:p
   const transport=new StreamableHTTPClientTransport(new URL(u.url),{requestInit:{headers:auth.headers,redirect:'manual'},onInsufficientScope:'throw',reconnectionOptions:{maxRetries:0,maxReconnectionDelay:1000,initialReconnectionDelay:1000,reconnectionDelayGrowFactor:1},fetch:(input,init)=>safeFetch(input, {...init,signal:AbortSignal.any([signal,...(init?.signal?[init.signal]:[])])},{allowedPrivateIps:JSON.parse(u.allowed_private_ips),timeoutMs:u.timeout_ms,maxResponseBytes:1_048_576,allowedOrigin:auth.allowedOrigin})});
   try{try{await client.connect(transport,{signal,timeout:u.timeout_ms});}catch{throw Object.assign(new Error('upstream_connect_failure'),{upstream_id:u.id});}return await work(client,auth.secret);}finally{await client.close().catch(()=>{});}
  }
- async function refresh(u:Upstream):Promise<number>{
+ async function refresh(u:Upstream):Promise<{tools_count:number;names:string[]}>{
   const release=lock(u);const signal=AbortSignal.timeout(u.timeout_ms);try{
    const native=(hub as NativeHub);
    const {tools,version}=u.url.startsWith('native://')?{tools:await cancellable(native.nativeTools!(u.connection_id!),signal),version:{name:'unifymcp-native',version:'1'}}:await connected(u,signal,async client=>{
@@ -97,6 +97,8 @@ export async function registerGateway(app:FastifyInstance,hub:Hub,requireOwner:p
     const metadata={description:tool.description??'',input_schema:tool.inputSchema,annotations:tool.annotations??{}};
     return {tool,metadata,fingerprint:argumentHash({...tool,server:version})};
    });
+   const current=getUpstream(u.id);
+   if(current.url!==u.url||current.connection_id!==u.connection_id||current.allowed_private_ips!==u.allowed_private_ips)fail('upstream_changed_during_discovery',409);
    hub.db.transaction(()=>{
     const existing=hub.db.prepare('SELECT * FROM tool WHERE upstream_id=?').all(u.id) as ToolRow[];
     for(const {tool,metadata,fingerprint}of validated){
@@ -106,21 +108,39 @@ export async function registerGateway(app:FastifyInstance,hub:Hub,requireOwner:p
     }
     for(const old of existing)if(!seen.has(old.name))hub.db.prepare('UPDATE tool SET enabled=0,approved_fingerprint=NULL WHERE id=?').run(old.id);
     hub.setSetting('import_requires_refresh:'+u.id,'false');failures.delete(u.id);if(u.status==='error')hub.db.prepare("UPDATE upstream SET status='pending_review' WHERE id=?").run(u.id);
-   })();audit('upstream.refresh',u.id);return tools.length;
+   })();audit('upstream.refresh',u.id);return {tools_count:tools.length,names:tools.map(tool=>tool.name)};
   }catch{hub.db.prepare("UPDATE upstream SET status='error' WHERE id=? AND status!='disabled'").run(u.id);audit('upstream.refresh',u.id,'failure','discovery_failed');fail('upstream_discovery_failed',502);}finally{release();}
  }
  app.get('/api/v1/upstreams',{preHandler:requireOwner},async()=>({upstreams:(hub.db.prepare('SELECT * FROM upstream ORDER BY created_at,id').all() as Upstream[]).map(u=>({...u,allowed_private_ips:JSON.parse(u.allowed_private_ips)}))}));
  app.post('/api/v1/upstreams',{preHandler:requireOwner},async req=>{
   const b=body(req);if(typeof b.name!=='string'||!b.name.trim()||b.name.length>120||typeof b.url!=='string')fail('invalid_upstream');
   if(b.transport&&b.transport!=='streamable_http')fail('unsupported_transport');
-  if(Number((hub.db.prepare('SELECT COUNT(*) AS n FROM upstream').get() as {n:number}).n)>=32)fail('upstream_limit',429);
+  if(Number((hub.db.prepare('SELECT COUNT(*) AS n FROM upstream').get() as {n:number}).n)>=128)fail('upstream_limit',429);
   const allowed=b.allowed_private_ips??[];if(!Array.isArray(allowed)||allowed.some(ip=>typeof ip!=='string'))fail('invalid_private_exception');
   try{await validateTarget(b.url,allowed);}catch{fail('invalid_or_blocked_target');}
   if(b.connection_id!=null&&(typeof b.connection_id!=='string'||!hub.db.prepare("SELECT id FROM connection WHERE id=? AND status IN ('active','connected')").get(b.connection_id)))fail('invalid_connection');
   const timeout=Number(b.timeout_ms??15_000);if(!Number.isInteger(timeout)||timeout<100||timeout>60_000)fail('invalid_timeout');
   const id=randomUUID();hub.db.prepare('INSERT INTO upstream VALUES(?,?,?,?,?,?,?,?)').run(id,b.name.trim(),b.url,b.connection_id??null,'pending_review',JSON.stringify(allowed),timeout,Date.now());audit('upstream.create',id);if(allowed.length)audit('upstream.private_exception',id,'success','exact_ip_allowlist');return {upstream:{...getUpstream(id),allowed_private_ips:allowed}};
  });
- app.post('/api/v1/upstreams/:id/refresh',{preHandler:requireOwner},async req=>({tools_count:await refresh(getUpstream(identifier(req)))}));
+ app.post('/api/v1/upstreams/:id/refresh',{preHandler:requireOwner},async req=>({tools_count:(await refresh(getUpstream(identifier(req)))).tools_count}));
+ app.post('/api/v1/upstreams/:id/auto-approve-tools',{preHandler:requireOwner},async req=>{
+  if(body(req).trust_server!==true)fail('explicit_server_trust_required');
+  const original=getUpstream(identifier(req)),discovery=await refresh(original);
+  if(!discovery.names.length)fail('no_current_tools_discovered',409);
+  const names=new Set(discovery.names),riskCounts={read:0,write:0,delete:0};let approved=0;
+  hub.db.transaction(()=>{
+   const current=getUpstream(original.id);
+   if(current.url!==original.url||current.connection_id!==original.connection_id||current.allowed_private_ips!==original.allowed_private_ips||(current.status!==original.status&&!(original.status==='error'&&current.status==='pending_review')))fail('upstream_changed_during_review',409);
+   const tools=hub.db.prepare('SELECT * FROM tool WHERE upstream_id=?').all(original.id) as ToolRow[];
+   for(const tool of tools){
+    if(!names.has(tool.name))continue;
+    const hints=JSON.parse(tool.annotations),risk=hints.destructiveHint===true?'delete':hints.readOnlyHint===true?'read':'write';
+    hub.db.prepare('UPDATE tool SET risk=?,enabled=1,approved_fingerprint=fingerprint,previous_metadata=NULL WHERE id=?').run(risk,tool.id);
+    hub.db.prepare('DELETE FROM approval WHERE tool_id=?').run(tool.id);riskCounts[risk]++;approved++;audit('tool.approve',tool.id,'success','trusted_server_annotations');
+   }
+   hub.db.prepare("UPDATE upstream SET status='active' WHERE id=?").run(original.id);audit('upstream.tools.auto_approve',original.id,'success','explicit_server_trust');
+  })();return {approved,risk_counts:riskCounts};
+ });
  app.post('/api/v1/upstreams/:id/approve',{preHandler:requireOwner},async req=>{const u=getUpstream(identifier(req));if(hub.setting('import_requires_refresh:'+u.id)==='true')fail('live_refresh_required',403);if(u.status==='error')fail('refresh_required');hub.db.prepare("UPDATE upstream SET status='active' WHERE id=?").run(u.id);audit('upstream.approve',u.id);return {upstream:getUpstream(u.id)};});
  app.post('/api/v1/upstreams/:id/disable',{preHandler:requireOwner},async req=>{const u=getUpstream(identifier(req));hub.db.prepare("UPDATE upstream SET status='disabled' WHERE id=?").run(u.id);audit('upstream.disable',u.id);return {upstream:getUpstream(u.id)};});
  app.patch('/api/v1/upstreams/:id',{preHandler:requireOwner},async req=>{
@@ -180,7 +200,17 @@ export async function registerGateway(app:FastifyInstance,hub:Hub,requireOwner:p
   const handler=createMcpHandler(()=>{
    const server=new Server({name:'wheremymcp',version:'0.1.0'},{capabilities:{tools:{}},cacheHints:{'tools/list':{ttlMs:0,cacheScope:'private'}}});
    server.setRequestHandler('tools/list',request=>{
-    const client=hub.requireClient(req);const all=hub.db.prepare('SELECT * FROM tool WHERE enabled=1 ORDER BY gateway_name').all() as ToolRow[];const tools=all.filter(t=>{try{authorization(client,t);return true;}catch{return false;}});
+    const client=hub.requireClient(req),now=Date.now();
+    const candidates=hub.db.prepare(`SELECT t.* FROM client cl JOIN profile p ON p.id=cl.profile_id
+      JOIN profile_grant g ON g.profile_id=p.id JOIN tool t ON t.id=g.tool_id JOIN upstream u ON u.id=t.upstream_id
+      LEFT JOIN connection c ON c.id=u.connection_id
+      WHERE cl.id=? AND cl.status='active' AND (cl.expires_at IS NULL OR cl.expires_at>?)
+      AND t.enabled=1 AND t.fingerprint=t.approved_fingerprint AND t.risk IN ('read','write','delete')
+      AND u.status='active' AND g.connection_id IS u.connection_id AND g.action_class=t.risk
+      AND (u.connection_id IS NULL OR (c.status IN ('active','connected') AND (c.expires_at IS NULL OR c.expires_at>?)))
+      ORDER BY t.gateway_name`).all(client.id,now,now) as ToolRow[];
+    const refreshRequired=new Map<string,boolean>();
+    const tools=stopped()?[]:candidates.filter(tool=>{if(!refreshRequired.has(tool.upstream_id))refreshRequired.set(tool.upstream_id,hub.setting('import_requires_refresh:'+tool.upstream_id)==='true');return !refreshRequired.get(tool.upstream_id);});
     const cursor=request.params?.cursor;const offset=cursor?Number(cursor):0;if(!Number.isSafeInteger(offset)||offset<0||offset>tools.length)throw new ProtocolError(-32602,'Invalid cursor');const page=tools.slice(offset,offset+64);return {tools:page.map(toolDefinition),...(offset+64<tools.length?{nextCursor:String(offset+64)}:{})};
    });
    server.setRequestHandler('tools/call',(request,ctx)=>invoke(req,request.params.name,request.params.arguments??{},ctx.mcpReq._meta?.wheremymcp_approval_id??ctx.mcpReq._meta?.unifymcp_approval_id,AbortSignal.any([ctx.mcpReq.signal,disconnect.signal])));

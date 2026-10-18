@@ -2,7 +2,7 @@
 
 A self-hosted MCP gateway for your tools, accounts and agent clients.
 
-Connect remote MCP servers, review the tools they expose, and choose what each agent can use. WhereMyMCP keeps provider credentials on your instance and issues separate, revocable tokens for your clients. One owner manages access through the dashboard.
+Connect remote MCP servers, approve trusted servers in bulk, and choose what each agent can use. WhereMyMCP keeps provider credentials on your instance and issues separate, revocable tokens for your clients. One owner manages access through the dashboard.
 
 Development release. See [current limitations](#current-limitations) and the [verification report](docs/e2e-audit-2026-10-18.md) for the scope of local testing.
 
@@ -17,13 +17,15 @@ Development release. See [current limitations](#current-limitations) and the [ve
 | Capability | What you control |
 | --- | --- |
 | MCP gateway | Register remote Streamable HTTP servers and discover their tools through one `/mcp` endpoint. |
-| Tool review | Inspect descriptions, schemas and risk. Metadata changes quarantine affected tools until reviewed again. |
-| Profiles and clients | Grant exact tools and account bindings to each profile. Issue, rotate, expire or revoke client tokens. |
+| Tool approval | Auto approve current tools from selected trusted servers in bulk, or review individually. Metadata changes quarantine affected tools until explicitly approved again. |
+| Profiles and clients | Select whole MCP servers or all available tools for a profile. Exact tools and account bindings stay enforced. Issue, rotate, expire or revoke client tokens. |
 | Multiple accounts | Keep account connections under distinct aliases and stable IDs, with encrypted provider credentials. |
 | One-use approvals | Authorize each write or delete call for one client, one tool and one exact argument object. |
 | Owner dashboard | Manage connections, servers, grants, clients, skills, MFA, audit events and backups. |
 | Backup and portability | Create and download encrypted backups, restore offline, and preview credential-free configuration imports. |
 | Reviewed skills | Preview imported files, approve them, and explicitly plan/apply file sync through the CLI. |
+
+Bulk approval uses explicit `destructiveHint: true` for Delete, `readOnlyHint: true` for Read, and Write when hints are missing or unclear. Server metadata is trusted only after owner confirmation. Write/delete calls still require one-use approval; future metadata changes still quarantine tools. Bulk approval does not create profile grants.
 
 New profiles grant no access by default. The owner signs in with a dashboard session; agents use profile-bound bearer tokens. Upstream requests use the credentials bound to the approved tool, rather than the agent's gateway token.
 
@@ -68,9 +70,9 @@ Log in and enable authenticator MFA under **Security**. Owner claim closes boots
 ### 3. Configure your first client
 
 1. In **Connections**, add the credentials required by your server. An unauthenticated server can use no connection.
-2. In **MCP servers**, register the remote endpoint, refresh its tools and approve the server.
-3. In **Tool review**, inspect each tool, choose its risk and enable it.
-4. In **Profiles & grants**, grant only the reviewed tools and account bindings the client needs.
+2. In **MCP servers**, register the remote endpoint and select its connection if needed.
+3. In **MCP servers**, select the servers you trust and choose **Auto approve selected servers**. Confirm server trust. The batch refreshes discovery and enables current tools using their annotations. Manual **Tool review** remains available for individual overrides.
+4. In **Profiles & grants**, open **Default → Edit tool access**. Select entire MCP servers or **Select all available**, then **Save access**. A new profile is optional.
 5. In **Agent clients**, issue a token bound to that profile. Save it when it appears.
 6. Generate the client configuration, set the token in the client's environment and connect to `/mcp`.
 

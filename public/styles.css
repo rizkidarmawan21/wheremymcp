@@ -137,3 +137,15 @@ dialog.grants-dialog { width:min(52rem,calc(100% - 2rem)); }
 .grant-copy p { margin:0; font-size:.8125rem; }
 .grant-description { color:var(--muted); }
 @media(max-width:41.99rem) { .dialog-head,.dialog-body,.dialog-footer { padding:1rem; } .grant-entry { flex-wrap:wrap; } .grant-entry .status { margin-left:2rem; } .dialog-footer .actions button { flex:1; } }
+
+.bulk-toolbar { display:flex; align-items:center; gap:.75rem 1.25rem; flex-wrap:wrap; border-bottom:1px solid var(--line); padding-bottom:1rem; margin-bottom:1.5rem; }
+.bulk-toolbar p { margin:0; }
+.server-select-title { display:grid; grid-template-columns:1.25rem minmax(0,1fr); gap:.25rem .75rem; min-width:0; }
+.server-select-title input { grid-row:1 / span 2; margin:.2rem 0 0; }
+.server-select-title .row-title,.server-select-title .status { grid-column:2; justify-self:start; }
+.grant-server { overflow-wrap:anywhere; }
+.grant-server input { flex:none; }
+.grant-group details { margin:.25rem 0 0 2rem; }
+.grant-group summary { font-size:.8125rem; }
+.access-help { border-left:3px solid var(--accent); background:var(--soft); padding:1rem; margin-bottom:1rem; }
+.access-help p { margin:0 0 .75rem; }

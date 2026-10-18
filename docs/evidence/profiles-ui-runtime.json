@@ -1,20 +1,21 @@
 {
-  "verified_at": "2026-10-18T17:22:52.253721Z",
+  "verified_at": "2026-10-18T17:48:02.868400+00:00",
   "origin": "http://127.0.0.1:8080",
   "health": {
     "status": "ready"
   },
   "owner_claim_preserved": true,
-  "image_id": "sha256:71564fbef8002f937082059c7ec85fd6d17c44180c16b69d5640585841f075ca",
+  "image_id": "sha256:7f8aeafd4c2b03afdcadc6a2371a5ce4007d4d967b2770678d8e0665e6d8e546",
   "retained_volumes": [
     "unifymcp_secrets",
     "unifymcp_state"
   ],
   "served_assets_sha256": {
-    "app.js": "d97b42c3c0fdbac2c2f47fc694a5861e832d5322cbf61dc32c7dd0ab4b01d6f7",
-    "styles.css": "0216387ef846b4c3290093d12cc7081f00aadda252c17e591c46c42b80deda5e",
+    "app.js": "a0d3bfb7947970326bc4b9e94fcfcf3cc3e8d3b34efb0758a2ac5acf3c43e3fd",
+    "styles.css": "f2c97cf41c6f8a15b262c81467d56578991d9894b61dd68aa6d13a1938ac9f6e",
     "index.html": "20ca75a0a242ca1da3e575fa77fcb4109856d2503011c3c549a6337c678ee81c"
   },
-  "compiled_admin_sha256": "df6f3c25383682c74da1352ba22b73bc654417e53eabecc8a8823fdcdc543076",
-  "authenticated_feature_checks": "Disposable browser instance with actual backend and 30 tools; owner registry was not changed."
+  "compiled_admin_sha256": "c8ddb5d8b6c0f08ff2461754796ec7762e8a255961ce3ae9216db380ee7de07e",
+  "compiled_gateway_sha256": "a2bda5f5af18ed560c00b22512ca22ebdc234119a01af85bcf997949603a6269",
+  "authenticated_feature_checks": "Disposable browser instance with actual backend, 30-tool UI regression and 50 registered MCP entries backed by one authenticated local fixture (2500 tools). Owner registry was not changed."
 }
