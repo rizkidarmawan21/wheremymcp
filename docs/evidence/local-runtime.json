@@ -1,0 +1,18 @@
+{
+  "verified_at": "2026-10-18T16:46:53.360446+00:00",
+  "app.js": {
+    "source_matches_served": true,
+    "sha256": "5ca1a0bb8cb9a83b042087d2fcf967813556c553d7989530217ba278b7a01e08",
+    "cache_control": "no-cache"
+  },
+  "styles.css": {
+    "source_matches_served": true,
+    "sha256": "f66d5c58f1a6e2cc9acb38215a9397421b2c577e1d761dedbe96cefdee28d22e",
+    "cache_control": "no-cache"
+  },
+  "readiness": {
+    "status": "ready"
+  },
+  "image": "sha256:ad42fa0f1d91ec3c3f173c99330c70e55f70b48c93b72610701fc42813041df3",
+  "matches_container_e2e_image": true
+}

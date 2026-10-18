@@ -1,0 +1,69 @@
+{{- $secret := required "existingSecret is required (master.key and bootstrap.token)" .Values.existingSecret -}}
+{{- if and .Values.publicMode (or (not .Values.trustedProxies) (not (hasPrefix "https://" .Values.origin))) }}
+{{- fail "publicMode requires HTTPS origin and explicit trustedProxies" }}
+{{- end }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ .Release.Name }}
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels: {app.kubernetes.io/instance: {{ .Release.Name }}}
+  template:
+    metadata:
+      labels: {app.kubernetes.io/instance: {{ .Release.Name }}}
+    spec:
+      automountServiceAccountToken: false
+      terminationGracePeriodSeconds: 30
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000
+        fsGroupChangePolicy: OnRootMismatch
+        seccompProfile: {type: RuntimeDefault}
+      containers:
+        - name: hub
+          image: "{{ .Values.image.repository }}{{ if .Values.image.digest }}@{{ .Values.image.digest }}{{ else }}:{{ .Values.image.tag }}{{ end }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: {drop: [ALL]}
+          ports:
+            - {name: http, containerPort: 8080}
+          env:
+            - {name: HUB_HOST, value: "0.0.0.0"}
+            - {name: HUB_CONTAINER_MODE, value: "true"}
+            - {name: HUB_DATA_DIR, value: /data}
+            - {name: HUB_MASTER_KEY_FILE, value: /secrets/master.key}
+            - {name: HUB_BOOTSTRAP_TOKEN_FILE, value: /secrets/bootstrap.token}
+            - {name: HUB_ORIGIN, value: {{ .Values.origin | quote }}}
+            - {name: HUB_PUBLIC_MODE, value: {{ .Values.publicMode | quote }}}
+            - {name: HUB_TRUSTED_PROXIES, value: {{ join "," .Values.trustedProxies | quote }}}
+          readinessProbe:
+            httpGet: {path: /health/ready, port: http}
+            initialDelaySeconds: 5
+            timeoutSeconds: 2
+          livenessProbe:
+            httpGet: {path: /health/live, port: http}
+            initialDelaySeconds: 15
+            timeoutSeconds: 2
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+          volumeMounts:
+            - {name: data, mountPath: /data}
+            - {name: secrets, mountPath: /secrets, readOnly: true}
+            - {name: tmp, mountPath: /tmp}
+      volumes:
+        - name: data
+          persistentVolumeClaim: {claimName: {{ .Release.Name }}}
+        - name: secrets
+          secret:
+            secretName: {{ $secret }}
+            defaultMode: 0440
+        - name: tmp
+          emptyDir: {medium: Memory, sizeLimit: 64Mi}

@@ -1,0 +1,13 @@
+rules:
+  - id: prohibit-dynamic-execution
+    languages: [typescript, javascript]
+    severity: ERROR
+    message: Dynamic code execution is outside the application trust boundary.
+    pattern-either:
+      - pattern: eval(...)
+      - pattern: new Function(...)
+  - id: prohibit-disabled-tls-verification
+    languages: [typescript, javascript]
+    severity: ERROR
+    message: Upstream TLS verification must remain enabled.
+    pattern: 'rejectUnauthorized: false'

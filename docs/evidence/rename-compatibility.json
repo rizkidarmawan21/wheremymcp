@@ -1,0 +1,9 @@
+{
+  "result": "PASS",
+  "verified": [
+    "pre-rename database opens",
+    "pre-rename credential decrypts",
+    "pre-rename client token authenticates",
+    "pre-rename encrypted backup restores"
+  ]
+}

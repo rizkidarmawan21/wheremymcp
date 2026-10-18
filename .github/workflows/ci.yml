@@ -1,0 +1,50 @@
+name: checks
+on:
+  push:
+  pull_request:
+permissions:
+  contents: read
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - name: Secret scan
+        run: docker run --rm -v "$PWD:/src:ro" zricethezav/gitleaks:v8.24.2 detect --source /src --no-git --redact --exit-code 1
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: '22'
+          cache: npm
+      - run: npm ci
+      - run: npx playwright install --with-deps chromium
+      - run: npm test
+      - run: npm run typecheck
+      - run: npm run build
+      - run: npm audit --audit-level=high
+      - name: Static security analysis
+        run: docker run --rm -v "$PWD:/src:ro" semgrep/semgrep:1.107.0 semgrep scan --config /src/.github/semgrep.yml --error /src/src /src/public/app.js
+      - name: Compose validation
+        run: docker compose config --quiet
+      - name: Helm validation
+        uses: azure/setup-helm@b9e51907a09c216f16ebe8536097933489208112 # v4.3.0
+        with:
+          version: v3.19.0
+      - run: helm lint deploy/helm/wheremymcp --set existingSecret=wheremymcp-test
+      - run: helm template wheremymcp deploy/helm/wheremymcp --set existingSecret=wheremymcp-test > /tmp/manifests.yaml
+      - name: Build container
+        run: docker build -t wheremymcp:local .
+      - name: Container vulnerability scan
+        run: docker run --rm -v /var/run/docker.sock:/var/run/docker.sock aquasec/trivy:0.63.0 image --severity HIGH,CRITICAL --exit-code 1 --ignore-unfixed wheremymcp:local
+      - name: Compose smoke
+        run: |
+          docker compose up -d --no-build
+          for attempt in $(seq 1 30); do
+            if curl --fail --silent http://127.0.0.1:8080/health/ready; then exit 0; fi
+            sleep 2
+          done
+          docker compose logs
+          exit 1
+      - name: Stop containers
+        if: always()
+        run: docker compose down

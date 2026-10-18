@@ -1,0 +1,6 @@
+apiVersion: v2
+name: wheremymcp
+description: Single-owner, single-replica MCP gateway
+version: 0.1.0
+appVersion: "0.1.0"
+type: application

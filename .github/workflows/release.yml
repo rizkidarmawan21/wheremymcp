@@ -1,0 +1,99 @@
+name: candidate-release
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version matching package.json (example: 0.1.0)'
+        required: true
+        type: string
+      node_image:
+        description: 'Verified node:22-bookworm-slim@sha256:... base image'
+        required: true
+        type: string
+      publish:
+        description: 'Publish/sign OCI image (blocked while package publication is disabled)'
+        default: false
+        type: boolean
+permissions:
+  contents: read
+jobs:
+  candidate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: '22'
+          cache: npm
+      - name: Validate release inputs
+        env:
+          RELEASE_VERSION: ${{ inputs.version }}
+          NODE_IMAGE: ${{ inputs.node_image }}
+          PUBLISH: ${{ inputs.publish }}
+        run: |
+          node --input-type=module -e '
+          import fs from "node:fs";
+          const p=JSON.parse(fs.readFileSync("package.json","utf8"));
+          if(p.version!==process.env.RELEASE_VERSION || !/^\d+\.\d+\.\d+$/.test(process.env.RELEASE_VERSION)) throw Error("Version mismatch");
+          if(!/^node:22-bookworm-slim@sha256:[a-f0-9]{64}$/.test(process.env.NODE_IMAGE)) throw Error("Pinned Node digest required");
+          if(process.env.PUBLISH==="true" && (p.private || p.license==="UNLICENSED")) throw Error("Package publication is disabled or no distributable license is selected");'
+      - run: npm ci
+      - run: npx playwright install --with-deps chromium
+      - run: npm test && npm run typecheck && npm run build && npm audit --audit-level=high
+      - name: Source archive, checksums, SBOM
+        run: |
+          mkdir -p artifacts
+          git archive --format=tar.gz --output=artifacts/wheremymcp-source.tar.gz HEAD
+          npm sbom --omit=dev --sbom-format=cyclonedx > artifacts/sbom.cdx.json
+          cd artifacts
+          sha256sum wheremymcp-source.tar.gz sbom.cdx.json > SHA256SUMS
+      - uses: sigstore/cosign-installer@3454372f43399081ed03b604cb2d021dabca52bb # v3.8.2
+      - name: Sign candidate checksums
+        run: cosign sign-blob --yes --bundle artifacts/SHA256SUMS.sigstore.json artifacts/SHA256SUMS
+      - uses: actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be # v2.4.0
+        with:
+          subject-path: artifacts/wheremymcp-source.tar.gz
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: release-candidate
+          path: artifacts/
+      - uses: docker/setup-qemu-action@c7c53464625b32c7a7e944ae62b3e17d2b600130 # v3.7.0
+        if: inputs.publish
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
+        if: inputs.publish
+      - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3.7.0
+        if: inputs.publish
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Build and publish image
+        id: image
+        if: inputs.publish
+        env:
+          REPOSITORY: ${{ github.repository }}
+          VERSION: ${{ inputs.version }}
+          NODE_IMAGE: ${{ inputs.node_image }}
+        run: |
+          IMAGE="ghcr.io/$(printf '%s' "$REPOSITORY" | tr '[:upper:]' '[:lower:]')"
+          docker buildx build --platform linux/amd64,linux/arm64 --build-arg "NODE_IMAGE=$NODE_IMAGE" --provenance=mode=max --sbom=true --tag "$IMAGE:$VERSION" --metadata-file /tmp/image.json --push .
+          DIGEST=$(node -p 'JSON.parse(require("fs").readFileSync("/tmp/image.json","utf8"))["containerimage.digest"]')
+          printf 'image=%s\ndigest=%s\n' "$IMAGE" "$DIGEST" >> "$GITHUB_OUTPUT"
+      - name: Sign immutable image
+        if: inputs.publish
+        env:
+          IMAGE: ${{ steps.image.outputs.image }}
+          DIGEST: ${{ steps.image.outputs.digest }}
+        run: cosign sign --yes "$IMAGE@$DIGEST"
+      - uses: actions/attest-build-provenance@v2
+        if: inputs.publish
+        with:
+          subject-name: ${{ steps.image.outputs.image }}
+          subject-digest: ${{ steps.image.outputs.digest }}
+          push-to-registry: true

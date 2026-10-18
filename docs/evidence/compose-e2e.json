@@ -1,0 +1,24 @@
+{
+  "result": "PASS",
+  "project": "wheremymcp-verify-e2e",
+  "transport": [
+    "2026-07-28",
+    "2025-11-25"
+  ],
+  "verified": [
+    "fresh owner claim",
+    "encrypted upstream account",
+    "DNS-pinned container egress",
+    "discovery/review/profile grants",
+    "read invocation",
+    "one-use write approval",
+    "client revoke",
+    "metadata-only audit",
+    "encrypted backup",
+    "12 dashboard pages at desktop and mobile widths",
+    "unavailable action buttons disabled",
+    "no literal null content",
+    "browser login/logout",
+    "logout"
+  ]
+}

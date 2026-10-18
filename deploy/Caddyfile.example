@@ -1,0 +1,9 @@
+# Replace hostname. Keep HUB_ORIGIN equal to this exact HTTPS origin.
+# Set HUB_TRUSTED_PROXIES to Caddy's explicit source IP observed by the app.
+hub.example.invalid {
+  reverse_proxy 127.0.0.1:8080 {
+    header_up Host {host}
+    header_up X-Forwarded-Proto https
+    header_up X-Forwarded-Host {host}
+  }
+}

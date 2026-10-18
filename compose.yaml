@@ -1,0 +1,65 @@
+name: ${COMPOSE_PROJECT_NAME:-wheremymcp}
+services:
+  init:
+    build: .
+    image: wheremymcp:local
+    user: "0:0"
+    entrypoint: ["/usr/local/bin/wheremymcp-init"]
+    read_only: true
+    network_mode: none
+    cap_drop: [ALL]
+    cap_add: [CHOWN, DAC_OVERRIDE, FOWNER]
+    security_opt: [no-new-privileges:true]
+    environment:
+      HUB_DATA_DIR: /data
+      HUB_MASTER_KEY_FILE: /secrets/master.key
+      HUB_BOOTSTRAP_TOKEN_FILE: /secrets/bootstrap.token
+    volumes:
+      - state:/data
+      - secrets:/secrets
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=16m
+    restart: "no"
+  hub:
+    image: wheremymcp:local
+    depends_on:
+      init:
+        condition: service_completed_successfully
+    user: "1000:1000"
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    pids_limit: 128
+    mem_limit: 512m
+    cpus: 1
+    ulimits:
+      nofile:
+        soft: 1024
+        hard: 1024
+    environment:
+      HUB_HOST: 0.0.0.0
+      HUB_PORT: "8080"
+      HUB_CONTAINER_MODE: "true"
+      HUB_DATA_DIR: /data
+      HUB_MASTER_KEY_FILE: /secrets/master.key
+      HUB_BOOTSTRAP_TOKEN_FILE: /secrets/bootstrap.token
+      HUB_ORIGIN: ${HUB_ORIGIN:-http://127.0.0.1:${HUB_PORT:-8080}}
+      HUB_PUBLIC_MODE: ${HUB_PUBLIC_MODE:-false}
+      HUB_TRUSTED_PROXIES: ${HUB_TRUSTED_PROXIES:-}
+    ports:
+      - "127.0.0.1:${HUB_PORT:-8080}:8080"
+    volumes:
+      - state:/data
+      - secrets:/secrets:ro
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=64m
+    restart: unless-stopped
+    stop_grace_period: 30s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+volumes:
+  state:
+  secrets:

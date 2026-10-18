@@ -1,0 +1,37 @@
+image:
+  repository: wheremymcp
+  tag: local
+  digest: ""
+  pullPolicy: IfNotPresent
+existingSecret: ""
+persistence:
+  size: 2Gi
+  storageClass: ""
+origin: http://127.0.0.1:8080
+publicMode: false
+trustedProxies: []
+ingress:
+  enabled: false
+  className: ""
+  host: ""
+  tlsSecret: ""
+resources:
+  requests:
+    cpu: 100m
+    memory: 128Mi
+  limits:
+    cpu: "1"
+    memory: 512Mi
+    ephemeral-storage: 128Mi
+networkPolicy:
+  enabled: true
+  # The operator must explicitly allow the ingress controller's namespace.
+  ingressNamespaceSelector:
+    kubernetes.io/metadata.name: ingress-nginx
+  # Deny all non-DNS egress by default. Explicit upstream/proxy CIDRs only.
+  egressCIDRs: []
+  egressPorts: [443]
+  dnsNamespaceSelector:
+    kubernetes.io/metadata.name: kube-system
+  dnsPodSelector:
+    k8s-app: kube-dns
