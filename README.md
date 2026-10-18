@@ -154,7 +154,7 @@ The [implementation plan](docs/implementation-plan.md) and [E2E audit](docs/e2e-
 
 ## Development
 
-WhereMyMCP uses TypeScript, Fastify, SQLite WAL and a browser UI built with native JavaScript and CSS. Node.js 22+ and npm are required. Native SQLite and Argon2 dependencies may need a compiler toolchain when prebuilt binaries are unavailable.
+WhereMyMCP uses TypeScript, Fastify, SQLite WAL and a browser UI built with native JavaScript and CSS. Node.js 22.19.0+ and npm are required. Native SQLite and Argon2 dependencies may need a compiler toolchain when prebuilt binaries are unavailable.
 
 ```sh
 npm ci

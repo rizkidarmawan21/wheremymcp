@@ -36,7 +36,7 @@ The init service refuses a running instance. Before rebuilding or recreating an 
 
 ## Source install
 
-Use Node.js 22+, npm, and a native-build toolchain when needed. Keep key files outside the state directory:
+Use Node.js 22.19.0+, npm, and a native-build toolchain when needed. Keep key files outside the state directory:
 
 ```sh
 npm ci

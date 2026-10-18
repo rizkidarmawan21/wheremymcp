@@ -2,7 +2,7 @@
 
 | Surface | Implemented behavior | Evidence / limitation |
 | --- | --- | --- |
-| Node | Node.js 22+ TypeScript app and CLI | Local Node 22 tests; other runtimes require a fresh run |
+| Node | Node.js 22.19.0+ TypeScript app and CLI | Local Node 22 tests; other runtimes require a fresh run |
 | SQLite | Single writer, WAL, online backup, schema 2 | Backup/restore negative tests; network filesystems unsupported |
 | Backup format | `.umcp` JSON envelope version 1, AES-256-GCM | Whole-file canary absence, wrong key and tampered-manifest rejection |
 | Restore | Empty directory only; sessions revoked by default; optional client revocation | Local fresh-directory drill; operator must retain matching key |
