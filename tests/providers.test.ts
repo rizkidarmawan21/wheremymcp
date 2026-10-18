@@ -45,3 +45,26 @@ test('provider refresh is serialized and revocation wins an in-flight refresh',a
  try{const first=manager.resolveCredential(id);const second=manager.resolveCredential(id);await new Promise(r=>setImmediate(r));hub.db.prepare("UPDATE connection SET status='revoked',credential=NULL WHERE id=?").run(id);release();await assert.rejects(first,/revoked|changed/);await assert.rejects(second,/revoked|changed/);assert.equal(count,1);assert.equal((hub.db.prepare('SELECT credential FROM connection WHERE id=?').get(id) as any).credential,null);}
  finally{hub.close();rmSync(dir,{recursive:true,force:true});}
 });
+
+test('secret-file import reads approved regular files and rejects escapes, directories and oversized files',async()=>{
+ const {mkdir,writeFile,symlink}=await import('node:fs/promises');const Fastify=(await import('fastify')).default;
+ const {registerProviders}=await import('../src/providers.js');
+ const dir=mkdtempSync(join(tmpdir(),'hub-secret-file-')),approved=join(dir,'approved');await mkdir(approved);
+ await writeFile(join(approved,'token.txt'),'file-secret-canary\n',{mode:0o600});
+ await writeFile(join(dir,'outside.txt'),'outside-secret');await symlink(join(dir,'outside.txt'),join(approved,'escape.txt'));
+ await writeFile(join(approved,'large.txt'),'x'.repeat(16385));await mkdir(join(approved,'directory'));
+ const previous=process.env.HUB_CREDENTIAL_FILES_DIR;process.env.HUB_CREDENTIAL_FILES_DIR=approved;
+ const hub=new Hub(':memory:',randomBytes(32),loadConfig({HUB_DATA_DIR:dir})),app=Fastify();
+ await registerProviders(app,hub,async()=>{});
+ const create=(alias:string,secret_file:string)=>app.inject({method:'POST',url:'/api/v1/connections',payload:{provider:'bearer',alias,secret_file}});
+ try{
+  const valid=await create('valid-file','token.txt');assert.equal(valid.statusCode,201);assert.equal(valid.body.includes('file-secret-canary'),false);
+  const id=valid.json().connection.id;const row=hub.db.prepare('SELECT credential FROM connection WHERE id=?').get(id) as {credential:string};
+  assert.equal(JSON.parse(hub.open(row.credential,`connection:${id}`)).secret,'file-secret-canary');
+  assert.equal((await create('traversal-file','../outside.txt')).statusCode,403);
+  assert.equal((await create('symlink-file','escape.txt')).statusCode,403);
+  assert.equal((await create('oversized-file','large.txt')).statusCode,400);
+  assert.equal((await create('directory-file','directory')).statusCode,400);
+  assert.equal(hub.db.prepare('SELECT count(*) FROM connection').pluck().get(),1);
+ }finally{if(previous===undefined)delete process.env.HUB_CREDENTIAL_FILES_DIR;else process.env.HUB_CREDENTIAL_FILES_DIR=previous;await app.close();hub.close();rmSync(dir,{recursive:true,force:true});}
+});

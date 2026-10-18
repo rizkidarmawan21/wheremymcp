@@ -1,5 +1,7 @@
 import { createHash, randomBytes, randomUUID } from 'node:crypto';
-import { readFile } from 'node:fs/promises';
+import { open, realpath } from 'node:fs/promises';
+import { constants } from 'node:fs';
+import { resolve, sep } from 'node:path';
 import type { FastifyInstance } from 'fastify';
 import { createLocalJWKSet, jwtVerify } from 'jose';
 import { z } from 'zod';
@@ -133,7 +135,15 @@ export async function registerProviders(app:FastifyInstance,hub:Hub,guard:OwnerG
  app.get('/api/v1/connections',route,async()=>({connections:(hub.db.prepare('SELECT * FROM connection ORDER BY created_at').all() as Connection[]).map(publicConnection)}));
  app.post('/api/v1/connections',route,async(request,reply)=>{
   const body=connectionInput.parse(request.body),id=randomUUID(),config=body.config||{};let secret=body.secret;
-  if(body.secret_file){if(secret)throw httpError(400,'Choose a secret value or a secret file');const root=process.env.HUB_CREDENTIAL_FILES_DIR;if(!root)throw httpError(403,'Secret-file import requires HUB_CREDENTIAL_FILES_DIR');const{realpath,stat}=await import('node:fs/promises');const{resolve,sep}=await import('node:path');const base=await realpath(root),file=await realpath(resolve(base,body.secret_file));if(!file.startsWith(base+sep))throw httpError(403,'Secret file is outside the approved directory');const info=await stat(file);if(!info.isFile()||info.size>16384)throw httpError(400,'Secret file must be a small regular file');secret=(await readFile(file,'utf8')).trim();}
+  if(body.secret_file){
+    if(secret)throw httpError(400,'Choose a secret value or a secret file');
+    const root=process.env.HUB_CREDENTIAL_FILES_DIR;if(!root)throw httpError(403,'Secret-file import requires HUB_CREDENTIAL_FILES_DIR');
+    const base=await realpath(root),path=await realpath(resolve(base,body.secret_file));
+    if(!path.startsWith(base+sep))throw httpError(403,'Secret file is outside the approved directory');
+    const file=await open(path,constants.O_RDONLY|constants.O_NOFOLLOW|constants.O_NONBLOCK);
+    try{const info=await file.stat();if(!info.isFile()||info.size>16384)throw httpError(400,'Secret file must be a small regular file');secret=(await file.readFile('utf8')).trim();}
+    finally{await file.close();}
+  }
   if(config.allowed_origin){const u=new URL(config.allowed_origin);if(u.origin!==config.allowed_origin || u.username||u.password||u.protocol!=='https:')throw httpError(400,'Credential allowed_origin must be an exact HTTPS origin');}
   if(body.provider==='api_key'&&!config.header_name)throw httpError(400,'API key connection requires header_name');
   const oauth=(!!providers[body.provider]||body.provider==='remote_oauth')&&!!config.client_id;

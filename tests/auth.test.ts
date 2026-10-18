@@ -107,3 +107,21 @@ test('MFA setup hands the owner a QR code next to the secret',async()=>{
     assert.match(body.qr_svg,/^<svg/,'QR SVG must be returned for authenticator scanning');
   }finally{await app.close();hub.close();rmSync(dir,{recursive:true,force:true});}
 });
+
+test('owner claim rejects symlink and expired bootstrap files before accepting a fresh token',async()=>{
+  const {symlink,unlink,writeFile,utimes}=await import('node:fs/promises');
+  const dir=mkdtempSync(join(tmpdir(),'hub-bootstrap-file-'));const key=randomBytes(32);
+  const config=loadConfig({HUB_DATA_DIR:dir,HUB_BOOTSTRAP_TTL_MS:'60000'});
+  const outside=join(dir,'external-token');await writeFile(outside,'bootstrap-file-token');await symlink(outside,config.bootstrapTokenFile);
+  const hub=new Hub(':memory:',key,config),app=await createApp(hub);
+  const claim=()=>app.inject({method:'POST',url:'/setup/claim',headers:{host:'127.0.0.1:8080'},payload:{setup_token:'bootstrap-file-token',password:'Correct-horse.battery/staple-2026'}});
+  try{
+    assert.equal((await claim()).statusCode,401,'A symlink must not supply the bootstrap secret');
+    assert.equal(hub.db.prepare('SELECT id FROM owner').get(),undefined);
+    await unlink(config.bootstrapTokenFile);await writeFile(config.bootstrapTokenFile,'bootstrap-file-token',{mode:0o600});
+    const expired=new Date(Date.now()-120000);await utimes(config.bootstrapTokenFile,expired,expired);
+    assert.equal((await claim()).statusCode,401,'Expired bootstrap files must remain rejected');
+    await utimes(config.bootstrapTokenFile,new Date(),new Date());
+    assert.equal((await claim()).statusCode,201,'A fresh regular bootstrap file still permits setup');
+  }finally{await app.close();hub.close();rmSync(dir,{recursive:true,force:true});}
+});

@@ -1,5 +1,6 @@
 import { randomBytes, randomUUID } from 'node:crypto';
-import { readFile, stat, unlink } from 'node:fs/promises';
+import { open, unlink } from 'node:fs/promises';
+import { constants } from 'node:fs';
 import { hash, argon2id } from 'argon2';
 import { Secret, TOTP } from 'otpauth';
 import QRCode from 'qrcode';
@@ -47,7 +48,11 @@ export async function registerAuth(app:FastifyInstance,hub:Hub,requireOwner:Owne
     if(hashing) throw httpError(429,'Setup is busy');
     const body=z.object({setup_token:z.string().max(256),password:passwordSchema}).strict().parse(request.body);
     let expected:string;
-    try {const metadata=await stat(hub.config.bootstrapTokenFile);if(Date.now()-metadata.mtimeMs>hub.config.bootstrapTtlMs)throw new Error();expected=(await readFile(hub.config.bootstrapTokenFile,'utf8')).trim();}
+    try {
+      const file=await open(hub.config.bootstrapTokenFile,constants.O_RDONLY|constants.O_NOFOLLOW|constants.O_NONBLOCK);
+      try{const metadata=await file.stat();if(!metadata.isFile()||metadata.size>256||Date.now()-metadata.mtimeMs>hub.config.bootstrapTtlMs)throw new Error();expected=(await file.readFile('utf8')).trim();}
+      finally{await file.close();}
+    }
     catch{throw httpError(401,'Setup token is missing or expired; generate a new token locally');}
     if(!expected || !equalSecret(expected,body.setup_token)) {hub.audit({action:'setup.claim',outcome:'deny',detail:'invalid_token'});throw httpError(401,'Setup token is invalid');}
     hashing=true;

@@ -127,14 +127,17 @@ test('skill sync replaces a hardlinked target without modifying the external ino
 });
 
 test('CLI init uses private raw key/token files, preserves keys, and never reopens claimed bootstrap',async()=>{
-  const {runCli}=await import('../src/cli.js');const {stat}=await import('node:fs/promises');
+  const {runCli}=await import('../src/cli.js');const {open}=await import('node:fs/promises');
   const {Hub}=await import('../src/core.js');const {loadConfig}=await import('../src/config.js');
   const root=await mkdtemp(join(tmpdir(),'unifymcp-cli-'));const vars={HUB_DATA_DIR:join(root,'state'),HUB_MASTER_KEY_FILE:join(root,'secrets/master.key'),HUB_BOOTSTRAP_TOKEN_FILE:join(root,'secrets/bootstrap.token')};
   const previous=Object.fromEntries(Object.keys(vars).map(key=>[key,process.env[key]]));Object.assign(process.env,vars);
   try {
     const result=await runCli(['init']);const key=await readFile(vars.HUB_MASTER_KEY_FILE),token=await readFile(vars.HUB_BOOTSTRAP_TOKEN_FILE,'utf8');
     assert.equal(key.length,32);assert.match(token.trim(),/^[\w-]{43}$/);assert.equal(JSON.stringify(result).includes(token.trim()),false);
-    assert.equal((await stat(vars.HUB_MASTER_KEY_FILE)).mode&0o777,0o600);assert.equal((await stat(vars.HUB_BOOTSTRAP_TOKEN_FILE)).mode&0o777,0o600);
+    const keyFile=await open(vars.HUB_MASTER_KEY_FILE,'r');
+    try{assert.equal((await keyFile.stat()).mode&0o777,0o600);}finally{await keyFile.close();}
+    const tokenFile=await open(vars.HUB_BOOTSTRAP_TOKEN_FILE,'r');
+    try{assert.equal((await tokenFile.stat()).mode&0o777,0o600);}finally{await tokenFile.close();}
     await runCli(['init']);assert.deepEqual(await readFile(vars.HUB_MASTER_KEY_FILE),key);assert.equal(await readFile(vars.HUB_BOOTSTRAP_TOKEN_FILE,'utf8'),token);
     await runCli(['bootstrap-reset']);assert.notEqual(await readFile(vars.HUB_BOOTSTRAP_TOKEN_FILE,'utf8'),token);
     const config=loadConfig();const hub=new Hub(join(config.dataDir,'hub.sqlite'),key,config);hub.db.prepare('INSERT INTO owner(id,password_hash,created_at) VALUES(1,?,0)').run('claimed');hub.close();

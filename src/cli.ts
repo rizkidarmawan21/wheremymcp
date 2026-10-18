@@ -1,6 +1,7 @@
 import { parseArgs } from 'node:util';
 import { randomBytes } from 'node:crypto';
-import { mkdir, readFile, writeFile, stat, lstat } from 'node:fs/promises';
+import { mkdir, readFile, writeFile, stat, open } from 'node:fs/promises';
+import { constants } from 'node:fs';
 import { join, dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { Hub } from './core.js';
@@ -20,8 +21,10 @@ export async function runCli(argv:string[]=process.argv.slice(2)) {
       await mkdir(dirname(config.masterKeyFile),{recursive:true,mode:0o700});await mkdir(dirname(config.bootstrapTokenFile),{recursive:true,mode:0o700});
       // Exclusive creation preserves an existing installation when Compose reruns init.
       try{await writeFile(config.masterKeyFile,randomBytes(32),{flag:'wx',mode:0o600});}catch(e){if((e as NodeJS.ErrnoException).code!=='EEXIST')throw e;}
-      if((await lstat(config.masterKeyFile)).isSymbolicLink())throw new Error('Symlink master key rejected');
-      const key=await readFile(config.masterKeyFile);const hub=new Hub(join(config.dataDir,'hub.sqlite'),key,config);
+      const file=await open(config.masterKeyFile,constants.O_RDONLY|constants.O_NOFOLLOW|constants.O_NONBLOCK);let key:Buffer;
+      try{const info=await file.stat();if(!info.isFile()||info.size!==32)throw new Error('Master key must be a regular file containing 32 raw bytes');key=await file.readFile();}
+      finally{await file.close();}
+      const hub=new Hub(join(config.dataDir,'hub.sqlite'),key,config);
       try{if(!hub.db.prepare('SELECT id FROM owner WHERE id=1').get()) {
         try{await writeFile(config.bootstrapTokenFile,`${randomBytes(32).toString('base64url')}\n`,{flag:'wx',mode:0o600});}catch(e){if((e as NodeJS.ErrnoException).code!=='EEXIST')throw e;}
       }}finally{hub.close();}

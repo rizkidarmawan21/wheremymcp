@@ -1,6 +1,6 @@
 import { createCipheriv, createDecipheriv, createHash, hkdfSync, randomBytes, randomUUID } from 'node:crypto';
 import { mkdir, readFile, writeFile, rename, rm, readdir, stat, lstat, copyFile, open } from 'node:fs/promises';
-import { join, dirname, resolve } from 'node:path';
+import { join, dirname, resolve, sep } from 'node:path';
 import { mkdirSync, chmodSync, constants } from 'node:fs';
 import { isIP } from 'node:net';
 import { z } from 'zod';
@@ -216,7 +216,9 @@ export async function registerOperations(app:FastifyInstance,hub:Hub,requireOwne
     const body=stepUpSchema.parse(req.body);
     if(!await hub.verifyStepUp(body.password,body.totp))return reply.code(403).send({error:'step_up_required',message:'Password and MFA verification required',request_id:req.id});
     const name=req.params.name;if(!/^backup-[\w-]+\.umcp$/.test(name))return reply.code(404).send({error:'not_found',message:'Backup not found',request_id:req.id});
-    let file;try{file=await open(join(hub.config.dataDir,'backups',name),constants.O_RDONLY|constants.O_NOFOLLOW);const info=await file.stat();if(!info.isFile())throw new Error();
+    const directory=resolve(hub.config.dataDir,'backups'),path=resolve(directory,name);
+    if(!path.startsWith(directory+sep))return reply.code(404).send({error:'not_found',message:'Backup not found',request_id:req.id});
+    let file;try{file=await open(path,constants.O_RDONLY|constants.O_NOFOLLOW|constants.O_NONBLOCK);const info=await file.stat();if(!info.isFile())throw new Error();
       hub.audit({action:'backup.download',principal:'owner',resource:name});const stream=file.createReadStream();file=undefined;return reply.type('application/octet-stream').header('content-disposition',`attachment; filename="${name}"`).send(stream);
     }catch{return reply.code(404).send({error:'not_found',message:'Backup not found',request_id:req.id});}finally{await file?.close();}
   });
