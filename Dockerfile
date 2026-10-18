@@ -9,6 +9,9 @@ COPY tsconfig.json ./
 COPY src ./src
 RUN npm run build && npm prune --omit=dev --ignore-scripts
 FROM ${NODE_IMAGE} AS runtime
+RUN apt-get update && apt-get upgrade -y --no-install-recommends \
+    && rm -rf /var/lib/apt/lists/* /usr/local/lib/node_modules/npm /usr/local/lib/node_modules/corepack /opt/yarn-* \
+    && rm -f /usr/local/bin/npm /usr/local/bin/npx /usr/local/bin/corepack /usr/local/bin/yarn /usr/local/bin/yarnpkg
 ENV NODE_ENV=production HUB_DATA_DIR=/data HUB_MASTER_KEY_FILE=/secrets/master.key HUB_BOOTSTRAP_TOKEN_FILE=/secrets/bootstrap.token HUB_HOST=0.0.0.0 HUB_CONTAINER_MODE=true
 WORKDIR /app
 COPY --from=build --chown=node:node /app/dist ./dist
