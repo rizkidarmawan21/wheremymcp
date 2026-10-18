@@ -16,3 +16,5 @@ Direction authorized for implementation: a utility dashboard for the single owne
 - Motion: hover and pressed feedback only, no entrance animation or perpetual loading animation. Loading is announced in words. Reduced motion removes transitions.
 - Assets and decoration: no illustrations, gradients, fake activity, invented identities or decorative status dots. Functional SVG icons retain visible tooltips and accessible action names. Exact tool fingerprints and namespace labels remain available where the owner reviews policy.
 - Accessibility: visible focus, native labels and dialog focus management, 44px interactive targets, wrapping code and rows, perceivable request and error states. Both themes use AA text pairings and strong field boundaries.
+
+- Tool access refinement: original tool names and descriptions lead each checkbox row, grouped by server. Search narrows long lists, and a fixed modal footer keeps the permission count, cancel and save available while the list scrolls. Internal gateway hashes stay in technical details. Visible profile delete controls explain required client reassignment; no client is silently assigned different access.

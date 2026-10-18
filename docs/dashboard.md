@@ -11,7 +11,7 @@ The dashboard is a same-origin HTML/CSS/ES-module application served by the Fast
 | MCP servers | Register endpoint and account binding; exact local-IP exception array; bounded timeout; refresh discovery; approve server; disable routing. |
 | Tool review | Show escaped description, input schema, annotations and fingerprint; compare approved and current metadata side by side after drift; review risk and enable the exact metadata. |
 | Connections | Account alias and identity; API key, bearer, GitHub, Google, Slack or remote MCP OAuth connection; secret replacement; scope disclosure; BYO OAuth client configuration and provider authorization handoff; revoke. |
-| Profiles and grants | Create or clone a profile; inspect and replace exact tool grants; preserve upstream connection ID; grant only the owner-reviewed risk classification. |
+| Profiles and grants | Create or clone a profile; choose tools by readable names grouped by server, search names/accounts, uncheck individual access or clear the selection, then save. Review-required tools remain unavailable. Delete custom profiles; explicitly choose replacement access for their clients before deletion. The built-in default remains, with editable tool access. |
 | Agent clients | Separate profile-bound token per application; optional expiry; token shown once; rotate and revoke; generate and copy environment-variable config for Codex, Claude, Cursor, Gemini, Hermes or generic clients. Hermes/generic output is explicitly transport guidance. |
 | One-use approvals | Select client and reviewed write/delete tool; inspect exact JSON argument object and lifetime; return the one-use approval ID for `_meta.wheremymcp_approval_id`. |
 | Reviewed skills | Enter file map or source reference; preview every imported file; import unapproved; inspect stored files; approve or delete. CLI sync remains an explicit dry-run/apply operation. |
@@ -105,3 +105,13 @@ Direction is the authorized utility workspace in DESIGN.md, ENERGY 2 / RHYTHM 2 
 - Liveliness PASS: balanced heading contrast, structural spacing, amber primary action and repeated namespace/fingerprint motif match the declared dials.
 - C-1/C-2/C-3/C-4/C-5 PASS: written purposes, working routes, task-driven content, state/theme/viewport resilience and sourced records.
 - R-05/R-11/R-15/R-16/R-20/R-21/R-29/R-30/R-31 PASS: purposeful utility composition, consistent small radii, concrete action labels, no marketing filler, working theme choice, constrained palette and documented major decisions.
+
+## Profiles and tool access
+
+A profile is an allowlist shared by the agent clients assigned to it. A grant allows one tool through its specific server account and reviewed risk classification. A profile with no grants exposes no tools. Write and delete tools still require a one-use approval for each call.
+
+Use **Edit tool access**, check the tools a client needs, and choose **Save access**. Uncheck a tool to remove its grant. **Clear selection** removes every check; changes apply only after saving. Internal gateway identifiers remain available in Tool review details, while permission controls use the original tool names and descriptions.
+
+A custom profile can be deleted. If clients use it, the confirmation requires a replacement profile and explains the immediate permission change. Client tokens remain valid and use the replacement profile; revoked clients remain revoked. Pending approvals are cleared, and the removed profile's grants are deleted without being copied into the replacement. The built-in Default profile cannot be deleted; clearing its access blocks all tools for its clients.
+
+The browser regression uses 30 tools, including a long name and an unreviewed tool. It verifies modal boundaries and visible save controls at 1280px and 390px in both themes, search, grant removal, clearing all access, deleting unused profiles, and explicit client reassignment before deleting a bound profile.

@@ -116,7 +116,7 @@ test('browser uses the actual app for claim, policy edits, credentials, client i
     await page.getByRole('button', {name: 'Approve server', exact: true}).click();
     await page.getByRole('dialog').getByRole('button', {name: 'Approve server'}).click();
     await page.getByRole('dialog').waitFor({state: 'hidden'});
-    const discovered = hub.db.prepare('SELECT id,gateway_name FROM tool WHERE upstream_id=?').get(upstream.id) as any;
+    const discovered = hub.db.prepare('SELECT id,name,gateway_name FROM tool WHERE upstream_id=?').get(upstream.id) as any;
     assert(discovered?.id, 'Refresh discovers a tool from the real MCP HTTP fixture');
     const toolId = discovered.id;
     await view('tools');
@@ -128,9 +128,9 @@ test('browser uses the actual app for claim, policy edits, credentials, client i
     await page.getByRole('dialog').waitFor({state: 'hidden'});
     assert.equal((hub.db.prepare('SELECT enabled FROM tool WHERE id=?').get(toolId) as any).enabled, 1);
     await view('profiles');
-    await page.getByRole('button', {name: 'Edit grants'}).first().click();
-    await page.getByLabel(discovered.gateway_name, {exact: true}).selectOption('write');
-    await page.getByRole('button', {name: 'Save exact grants'}).click();
+    await page.getByRole('button', {name: 'Edit tool access'}).first().click();
+    await page.getByRole('checkbox', {name: `Allow ${discovered.name}`, exact: true}).check();
+    await page.getByRole('button', {name: 'Save access'}).click();
     await page.getByRole('dialog').waitFor({state: 'hidden'});
     assert.equal((hub.db.prepare('SELECT connection_id FROM profile_grant WHERE tool_id=?').get(toolId) as any).connection_id, connection.id);
     await page.getByRole('button', {name: 'Clone', exact: true}).first().click();
@@ -358,6 +358,61 @@ test('browser uses the actual app for claim, policy edits, credentials, client i
     await page.getByLabel('Owner password').fill('Changed-browser-password-456');
     await page.getByRole('button', {name: 'Log in', exact: true}).click();
     await page.getByRole('heading', {name: 'Settings & diagnostics'}).waitFor();
+    const accessServer=randomUUID(),accessProfile=randomUUID(),accessClient=randomUUID(),accessTools:string[]=[];
+    hub.db.prepare('INSERT INTO upstream(id,name,url,status,created_at) VALUES(?,?,?,?,?)').run(accessServer,'Project workspace','https://example.com/mcp','active',Date.now());
+    hub.db.prepare('INSERT INTO profile VALUES(?,?,?,?,?)').run(accessProfile,'Research assistant','research-ui',0,Date.now());
+    hub.db.prepare('INSERT INTO client(id,name,kind,profile_id,token_hash,created_at) VALUES(?,?,?,?,?,?)').run(accessClient,'Research desktop','codex',accessProfile,randomUUID(),Date.now());
+    for(let i=0;i<30;i++){
+      const id=randomUUID();accessTools.push(id);const name=i===0?'search_projects':i===1?'lookup_'+('long_project_name_'.repeat(12)):i===29?'unreviewed_tool':`lookup_record_${i}`;
+      hub.db.prepare('INSERT INTO tool(id,upstream_id,name,gateway_name,description,input_schema,fingerprint,approved_fingerprint,risk,enabled) VALUES(?,?,?,?,?,?,?,?,?,?)').run(id,accessServer,name,`u_${accessServer.replaceAll('-','')}__${'f'.repeat(62)}${String(i).padStart(2,'0')}`,'Find project information in the workspace.','{}','reviewed',i===29?null:'reviewed',i===29?'unreviewed':'read',i===29?0:1);
+    }
+    hub.db.prepare('INSERT INTO profile_grant VALUES(?,?,NULL,?)').run(accessProfile,accessTools[0],'read');
+    await view('profiles');
+    const research=()=>page.locator('article').filter({has:page.getByRole('heading',{name:'Research assistant',exact:true})});
+    await research().getByRole('button',{name:'Edit tool access'}).click();
+    const grantDialog=page.getByRole('dialog');
+    await grantDialog.getByRole('heading',{name:'Tool access: Research assistant'}).waitFor();
+    assert.equal(await grantDialog.getByRole('checkbox',{name:'Allow search_projects',exact:true}).isChecked(),true);
+    assert.equal(await grantDialog.getByRole('checkbox',{name:'Allow unreviewed_tool',exact:true}).isDisabled(),true);
+    assert.equal((await grantDialog.innerText()).includes(`u_${accessServer.replaceAll('-','')}__`),false,'Machine identifiers must not be primary grant labels');
+    for(const width of [1280,390]){
+      await page.setViewportSize({width,height:900});
+      for(const theme of ['light','dark']){
+        await page.evaluate(theme=>document.documentElement.dataset.theme=theme,theme);
+        assert.equal(await grantDialog.evaluate(node=>node.scrollWidth<=node.clientWidth),true,'Grant dialog must not overflow horizontally');
+        assert.equal(await grantDialog.locator('.dialog-body').evaluate(node=>node.scrollWidth<=node.clientWidth),true,'Grant list must wrap long names');
+        assert.equal(await grantDialog.evaluate(node=>{const box=node.getBoundingClientRect();return box.left>=0&&box.right<=innerWidth&&box.top>=0&&box.bottom<=innerHeight;}),true,'Grant dialog must stay inside viewport');
+        await grantDialog.locator('.dialog-body').evaluate(node=>node.scrollTop=node.scrollHeight);
+        assert.equal(await grantDialog.getByRole('button',{name:'Save access',exact:true}).isVisible(),true);
+        const saveBox=await grantDialog.getByRole('button',{name:'Save access',exact:true}).boundingBox();assert(saveBox&&saveBox.y+saveBox.height<=900,'Save must remain visible while scrolling');
+        if(process.env.HUB_CAPTURE_DASHBOARD==='true'){await mkdir(new URL('../docs/evidence/',import.meta.url),{recursive:true});await page.screenshot({path:fileURLToPath(new URL(`../docs/evidence/grants-${width}-${theme}.png`,import.meta.url))});}
+      }
+    }
+    await page.setViewportSize({width:1280,height:900});
+    await grantDialog.getByRole('searchbox',{name:'Search tools',exact:true}).fill('search_projects');
+    assert.equal(await grantDialog.locator('.grant-entry:visible').count(),1);
+    await grantDialog.getByRole('checkbox',{name:'Allow search_projects',exact:true}).uncheck();
+    await grantDialog.getByRole('button',{name:'Save access',exact:true}).click();await grantDialog.waitFor({state:'hidden'});
+    assert.equal(hub.db.prepare('SELECT count(*) FROM profile_grant WHERE profile_id=?').pluck().get(accessProfile),0,'Unchecking must remove the stored grant');
+    await research().getByRole('button',{name:'Edit tool access'}).click();
+    await grantDialog.getByRole('checkbox',{name:'Allow search_projects',exact:true}).check();
+    await grantDialog.getByRole('button',{name:'Clear selection',exact:true}).click();
+    assert.equal(await grantDialog.getByRole('checkbox',{checked:true}).count(),0);
+    await grantDialog.getByRole('button',{name:'Save access',exact:true}).click();await grantDialog.waitFor({state:'hidden'});
+    await research().getByRole('button',{name:'Delete profile',exact:true}).click();
+    const fallback=(hub.db.prepare('SELECT id FROM profile WHERE is_default=1').get() as {id:string}).id;
+    await grantDialog.getByLabel('Move clients to profile').selectOption(fallback);
+    await grantDialog.getByRole('button',{name:'Move clients and delete profile',exact:true}).click();await grantDialog.waitFor({state:'hidden'});
+    assert.equal(hub.db.prepare('SELECT id FROM profile WHERE id=?').get(accessProfile),undefined);
+    assert.equal((hub.db.prepare('SELECT profile_id FROM client WHERE id=?').get(accessClient) as {profile_id:string}).profile_id,fallback);
+    await page.getByRole('heading',{name:'Research assistant',exact:true}).waitFor({state:'hidden'});
+    await page.getByRole('button',{name:'Create profile',exact:true}).click();
+    await grantDialog.getByLabel('Profile name').fill('Disposable profile');
+    await grantDialog.getByRole('button',{name:'Create profile',exact:true}).click();await grantDialog.waitFor({state:'hidden'});
+    const unused=(hub.db.prepare('SELECT id FROM profile WHERE name=?').get('Disposable profile') as {id:string}).id;
+    await page.locator('article').filter({has:page.getByRole('heading',{name:'Disposable profile',exact:true})}).getByRole('button',{name:'Delete profile',exact:true}).click();
+    await grantDialog.getByRole('button',{name:'Delete profile',exact:true}).click();await grantDialog.waitFor({state:'hidden'});
+    assert.equal(hub.db.prepare('SELECT id FROM profile WHERE id=?').get(unused),undefined);
     await page.getByRole('button', {name: 'Log out', exact: true}).click();
     await page.getByRole('heading', {name: 'Owner login'}).waitFor();
     assert.deepEqual(errors, []);
@@ -491,8 +546,8 @@ test('browser owner workflows, XSS boundaries, responsive themes and one-time se
     await page.getByRole('button', {name: 'Save approval'}).click();
     await page.getByRole('dialog').waitFor({state: 'hidden'});
     await view('profiles');
-    await page.getByRole('button', {name: 'Edit grants'}).first().click();
-    await page.getByRole('button', {name: 'Save exact grants'}).click();
+    await page.getByRole('button', {name: 'Edit tool access'}).first().click();
+    await page.getByRole('button', {name: 'Save access'}).click();
     await page.getByRole('dialog').waitFor({state: 'hidden'});
     assert.deepEqual(calls.find(call => call.path.endsWith('/grants'))?.body.grants, [{tool_id: 't1', connection_id: 'c1', action_class: 'write'}]);
     await view('clients');

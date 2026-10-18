@@ -45,6 +45,7 @@ Root creates these tables in `src/core.ts` before workers run. All opaque IDs ar
 - `GET|POST /api/v1/profiles`; POST `{name,slug?}`.
 - `GET /api/v1/profiles/:id` returns profile with `grants`; `PUT /api/v1/profiles/:id/grants` body `{grants:[{tool_id,connection_id,action_class}]}`.
 - `POST /api/v1/profiles/:id/clone` body `{name,slug?}`.
+- `DELETE /api/v1/profiles/:id` accepts optional `{replacement_profile_id}`. Built-in default deletion is refused. Bound clients require an explicit different existing replacement; reassignment, pending-approval removal, profile/grant deletion and audit are atomic. Client tokens and revoked status are preserved; replacement grants are not changed.
 - `GET|POST /api/v1/clients`; POST `{name,kind,profile_id,ttl_days?}` returns `{client,token}` once.
 - `POST /api/v1/clients/:id/revoke`, `POST /api/v1/clients/:id/rotate` returns `{token}` once.
 - `GET /api/v1/clients/:id/config?kind=codex|claude|cursor|gemini` returns `{snippet,instructions}` with environment-variable token reference, never a stored secret.

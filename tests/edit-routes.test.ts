@@ -113,3 +113,30 @@ test('connection delete explains retained grant references after an upstream cha
   hub.db.prepare('DELETE FROM profile_grant WHERE tool_id=?').run(tool);
   assert.equal((await send('DELETE',`/api/v1/connections/${oldAccount}`)).statusCode,200);
 });
+
+test('deleting a bound profile requires an explicit replacement and clears grants and pending approvals atomically',async t=>{
+ const {hub,send}=await ownerApp(t);
+ const fallback=(hub.db.prepare('SELECT id FROM profile WHERE is_default=1').get() as {id:string}).id;
+ const profile=(await send('POST','/api/v1/profiles',{name:'Temporary access'})).json().profile;
+ const {client,token}=(await send('POST','/api/v1/clients',{name:'Retained client',kind:'codex',profile_id:profile.id})).json();
+ const revoked=(await send('POST','/api/v1/clients',{name:'Revoked client',kind:'other',profile_id:profile.id})).json().client;await send('POST',`/api/v1/clients/${revoked.id}/revoke`);
+ const upstream=randomUUID(),tool=randomUUID();
+ hub.db.prepare('INSERT INTO upstream(id,name,url,status,created_at) VALUES(?,?,?,?,?)').run(upstream,'Test server','https://example.com/mcp','active',Date.now());
+ hub.db.prepare('INSERT INTO tool(id,upstream_id,name,gateway_name,input_schema,fingerprint,risk,enabled) VALUES(?,?,?,?,?,?,?,1)').run(tool,upstream,'search','test_search','{}','fingerprint','read');
+ hub.db.prepare('INSERT INTO profile_grant VALUES(?,?,NULL,?)').run(profile.id,tool,'read');
+ hub.db.prepare('INSERT INTO approval VALUES(?,?,?,?,?,NULL)').run(randomUUID(),client.id,tool,'arguments',Date.now()+60000);
+ assert.equal((await send('DELETE',`/api/v1/profiles/${fallback}`,{replacement_profile_id:profile.id})).statusCode,409);
+ assert.equal((await send('DELETE',`/api/v1/profiles/${profile.id}`)).statusCode,409);
+ assert.equal((await send('DELETE',`/api/v1/profiles/${profile.id}`,{replacement_profile_id:profile.id})).statusCode,400);
+ assert.equal((await send('DELETE',`/api/v1/profiles/${profile.id}`,{replacement_profile_id:randomUUID()})).statusCode,404);
+ assert.equal((hub.db.prepare('SELECT profile_id FROM client WHERE id=?').get(client.id) as {profile_id:string}).profile_id,profile.id);
+ assert.equal(hub.db.prepare('SELECT count(*) FROM approval').pluck().get(),1);
+ assert.equal((await send('DELETE',`/api/v1/profiles/${profile.id}`,{replacement_profile_id:fallback})).statusCode,200);
+ assert.equal(hub.db.prepare('SELECT id FROM profile WHERE id=?').get(profile.id),undefined);
+ assert.equal(hub.db.prepare('SELECT count(*) FROM profile_grant WHERE profile_id=?').pluck().get(profile.id),0);
+ assert.equal(hub.db.prepare('SELECT count(*) FROM approval WHERE client_id=?').pluck().get(client.id),0);
+ const retained=hub.requireClient({headers:{authorization:`Bearer ${token}`}} as any);
+ assert.equal(retained.id,client.id);assert.equal(retained.profile_id,fallback);
+ assert.equal((hub.db.prepare('SELECT status FROM client WHERE id=?').get(revoked.id) as {status:string}).status,'revoked','Moving clients must not reactivate revoked tokens');
+ assert.equal(hub.db.prepare('SELECT count(*) FROM profile_grant WHERE profile_id=?').pluck().get(fallback),0,'Replacement access must not inherit deleted grants');
+});

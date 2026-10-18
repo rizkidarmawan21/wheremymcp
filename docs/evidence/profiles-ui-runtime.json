@@ -1,0 +1,20 @@
+{
+  "verified_at": "2026-10-18T17:22:52.253721Z",
+  "origin": "http://127.0.0.1:8080",
+  "health": {
+    "status": "ready"
+  },
+  "owner_claim_preserved": true,
+  "image_id": "sha256:71564fbef8002f937082059c7ec85fd6d17c44180c16b69d5640585841f075ca",
+  "retained_volumes": [
+    "unifymcp_secrets",
+    "unifymcp_state"
+  ],
+  "served_assets_sha256": {
+    "app.js": "d97b42c3c0fdbac2c2f47fc694a5861e832d5322cbf61dc32c7dd0ab4b01d6f7",
+    "styles.css": "0216387ef846b4c3290093d12cc7081f00aadda252c17e591c46c42b80deda5e",
+    "index.html": "20ca75a0a242ca1da3e575fa77fcb4109856d2503011c3c549a6337c678ee81c"
+  },
+  "compiled_admin_sha256": "df6f3c25383682c74da1352ba22b73bc654417e53eabecc8a8823fdcdc543076",
+  "authenticated_feature_checks": "Disposable browser instance with actual backend and 30 tools; owner registry was not changed."
+}

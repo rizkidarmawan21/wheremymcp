@@ -12,7 +12,7 @@ const pages = {
   upstreams: ['MCP servers', 'Register remote servers, discover tools, then explicitly approve the server and its tools.'],
   tools: ['Tool review', 'Review server-provided metadata as untrusted content. Classify risk before granting access.'],
   connections: ['Connections', 'Keep account identities and credentials distinct. Tool grants stay bound to stable connection IDs.'],
-  profiles: ['Profiles & grants', 'Give each client only the tools it needs. Write and delete calls also require one-use approval.'],
+  profiles: ['Profiles & grants', 'A profile decides which tools an agent client can use. Allow only the tools it needs; everything else stays blocked.'],
   clients: ['Agent clients', 'Issue a separate profile-bound token for each client. Tokens appear only once.'],
   approvals: ['One-use approvals', 'Authorize one exact write or delete call. The client, tool and argument object must match.'],
   skills: ['Reviewed skills', 'Import files for inspection. Approval does not execute content or install hooks.'],
@@ -157,7 +157,7 @@ function form(fields, submitLabel, onSubmit) {
   });
   return node;
 }
-function closeDialog() { if (dialog.open) dialog.close(); dialog.replaceChildren(); }
+function closeDialog() { if (dialog.open) dialog.close(); dialog.replaceChildren(); dialog.classList.remove('grants-dialog'); }
 function modal(title, ...children) {
   closeDialog();
   dialog.append(el('div', {class: 'dialog-head'}, el('h2', {id: 'dialog-title'}, title), action('Close', closeDialog, '', 'close')), el('div', {class: 'dialog-body'}, ...children.flat(Infinity).filter(child => child !== null && child !== undefined)));
@@ -337,6 +337,52 @@ function registryInventory(counts) {
 async function stopControl(enabled) {
   await confirmAction(enabled ? 'Stop gateway calls' : 'Resume gateway calls', enabled ? 'Deny all agent tool calls immediately. Owner access stays available so you can inspect and repair policy.' : 'Allow agent calls again under the current grants, approvals and connection policy.', () => api('/api/v1/emergency-stop', 'POST', {enabled}), enabled ? 'Stop all calls' : 'Resume calls');
 }
+async function editGrants(profileRow, tools, connections) {
+  const profile = await api(idPath('profiles', profileRow.id));
+  const grants = profile.grants || profile.profile?.grants || [];
+  const selected = new Map(), entries = [], groups = new Map();
+  const count = p('', 'hint'); count.setAttribute('aria-live', 'polite');
+  const error = p('', 'error'); error.setAttribute('role', 'alert');
+  const search = el('input', {type: 'search', placeholder: 'Search tools, servers or accounts', 'aria-label': 'Search tools'});
+  const list = el('div', {class: 'grant-list'}), noMatches = empty('No tools match this search.'); noMatches.hidden = true;
+  const updateCount = () => { count.textContent = `${selected.size} tool${selected.size === 1 ? '' : 's'} allowed. Uncheck to remove access.`; };
+  for (const tool of [...tools].sort((a, b) => String(a.upstream_name || '').localeCompare(String(b.upstream_name || '')) || String(a.name).localeCompare(String(b.name)))) {
+    const existing = grants.find(grant => grant.tool_id === tool.id);
+    const retained = existing && existing.action_class === tool.risk && (existing.connection_id || null) === (tool.connection_id || null);
+    const available = !!tool.enabled && ['read', 'write', 'delete'].includes(tool.risk) && (!tool.upstream_status || tool.upstream_status === 'active') && tool.approved_fingerprint === tool.fingerprint;
+    const name = tool.name || 'Unnamed tool';
+    const account = connections.find(connection => connection.id === tool.connection_id)?.alias || (tool.connection_id ? 'Account unavailable' : 'No account required');
+    const checkbox = el('input', {type: 'checkbox', 'aria-label': `Allow ${name}`, disabled: !available && !retained}); checkbox.checked = !!retained;
+    if (retained) selected.set(tool.id, tool);
+    const reason = !available ? 'Unavailable until the tool and server are reviewed and enabled.' : tool.risk === 'read' ? 'Can view data.' : 'Can change data. Each call also needs your one-use approval.';
+    checkbox.setAttribute('aria-describedby', `grant-info-${tool.id}`);
+    const info = el('div', {class: 'grant-copy', id: `grant-info-${tool.id}`}, el('strong', {}, name), p(tool.description || 'No description supplied by this server.', 'grant-description'), p(`${account} · ${reason}`, 'hint'), existing && !retained ? p('Previous access no longer matches this tool or account. Saving removes that outdated grant.', 'error') : null);
+    const entry = el('div', {class: 'grant-entry'}, el('label', {class: 'grant-toggle'}, checkbox, info), el('span', {class: 'status'}, {read: 'Read only', write: 'Write', delete: 'Delete'}[tool.risk] || 'Needs review'));
+    checkbox.addEventListener('change', () => { if (checkbox.checked) selected.set(tool.id, tool); else selected.delete(tool.id); updateCount(); });
+    const groupKey = tool.upstream_id || tool.upstream_name || 'unknown';
+    if (!groups.has(groupKey)) { const group = el('section', {class: 'grant-group'}, el('h3', {}, tool.upstream_name || 'MCP server')); groups.set(groupKey, group); list.append(group); }
+    const group = groups.get(groupKey); group.append(entry);
+    entries.push({entry, checkbox, group, text: `${name} ${tool.description || ''} ${tool.upstream_name || ''} ${account}`.toLowerCase()});
+  }
+  search.addEventListener('input', () => {
+    const query = search.value.toLowerCase().trim();
+    for (const item of entries) item.entry.hidden = !item.text.includes(query);
+    for (const group of groups.values()) group.hidden = !entries.some(item => item.group === group && !item.entry.hidden);
+    noMatches.hidden = entries.some(item => !item.entry.hidden);
+  });
+  updateCount();
+  const clear = action('Clear selection', () => { selected.clear(); for (const item of entries) item.checkbox.checked = false; updateCount(); });
+  const save = action('Save access', async () => {
+    error.textContent = '';
+    try {
+      await api(idPath('profiles', profileRow.id, '/grants'), 'PUT', {grants: [...selected.values()].map(tool => ({tool_id: tool.id, connection_id: tool.connection_id || null, action_class: tool.risk}))});
+      closeDialog(); await route(); notify('Tool access saved. Client permissions updated.');
+    } catch (err) { error.textContent = err.message; }
+  }, 'primary');
+  modal(`Tool access: ${profileRow.name}`, p('Checked tools are allowed for clients using this profile. Uncheck a tool to remove its access. Changes apply when you save.', 'hint'), tools.length ? el('div', {class: 'grant-search'}, search, clear) : null, tools.length ? list : empty('No tools discovered yet. Add an MCP server and review its tools first.'), noMatches);
+  dialog.classList.add('grants-dialog');
+  dialog.append(el('div', {class: 'dialog-footer'}, count, error, actions(action('Cancel', closeDialog), save)));
+}
 const renderers = {
   async overview(target) {
     const result = await api('/api/v1/overview');
@@ -391,8 +437,8 @@ const renderers = {
     for (const row of rows) {
       const drifted = row.approved_fingerprint && row.fingerprint !== row.approved_fingerprint;
       const status = drifted ? 'Metadata drift: quarantined' : row.enabled ? `Approved ${row.risk}` : row.upstream_status === 'disabled' ? 'Upstream disabled' : 'Pending review';
-      const item = summaryRow(row.gateway_name || row.name, status, [`Upstream: ${row.upstream_name || row.upstream_id}`, row.upstream_status && row.upstream_status !== 'active' ? `Upstream state: ${row.upstream_status}` : '', `Tool: ${row.name}`], action('Review risk & access', () => formModal('Approve tool policy', [{name: 'risk', label: 'Owner-assigned risk', type: 'select', required: true, value: ['read', 'write', 'delete'].includes(row.risk) ? row.risk : '', options: [{value: '', label: 'Choose risk after reviewing this tool'}, 'read', 'write', 'delete']}, {name: 'enabled', label: 'Enable this exact tool metadata', type: 'checkbox', value: !!row.enabled}], 'Save approval', data => api(idPath('tools', row.id, '/approve'), 'POST', data), 'Do not trust a server-provided read-only claim. Write and delete tools need explicit grants plus one-use approval.'), '', 'pencil'));
-      item.append(p(row.description || 'No description supplied.', 'muted'), details('Current schema, annotations & fingerprint', p(`Current fingerprint: ${row.fingerprint || 'Unavailable'}`, 'mono'), p(`Approved fingerprint: ${row.approved_fingerprint || 'Not approved'}`, 'mono'), code({input_schema: row.input_schema, annotations: row.annotations})));
+      const item = summaryRow(row.name || 'Unnamed tool', status, [`Upstream: ${row.upstream_name || row.upstream_id}`, row.upstream_status && row.upstream_status !== 'active' ? `Upstream state: ${row.upstream_status}` : '', `Tool: ${row.name}`], action('Review risk & access', () => formModal('Approve tool policy', [{name: 'risk', label: 'Owner-assigned risk', type: 'select', required: true, value: ['read', 'write', 'delete'].includes(row.risk) ? row.risk : '', options: [{value: '', label: 'Choose risk after reviewing this tool'}, 'read', 'write', 'delete']}, {name: 'enabled', label: 'Enable this exact tool metadata', type: 'checkbox', value: !!row.enabled}], 'Save approval', data => api(idPath('tools', row.id, '/approve'), 'POST', data), 'Do not trust a server-provided read-only claim. Write and delete tools need explicit grants plus one-use approval.'), '', 'pencil'));
+      item.append(p(row.description || 'No description supplied.', 'muted'), details('Current schema, annotations & fingerprint', p('Gateway identifier', 'hint'), code(row.gateway_name), p(`Current fingerprint: ${row.fingerprint || 'Unavailable'}`, 'mono'), p(`Approved fingerprint: ${row.approved_fingerprint || 'Not approved'}`, 'mono'), code({input_schema: row.input_schema, annotations: row.annotations})));
       if (drifted) {
         const previous = typeof row.previous_metadata === 'string' ? JSON.parse(row.previous_metadata) : row.previous_metadata;
         item.append(section('Metadata changed since approval', p('Calls remain quarantined until the current metadata is explicitly approved.'), previous ? el('div', {class: 'split'}, el('div', {}, el('h3', {}, 'Previously approved'), code(previous)), el('div', {}, el('h3', {}, 'Current discovery'), code({description: row.description, input_schema: row.input_schema, annotations: row.annotations, fingerprint: row.fingerprint}))) : p('The previous schema snapshot is unavailable. Compare the approved and current fingerprints above, then inspect the current metadata before approving.')));
@@ -438,20 +484,21 @@ const renderers = {
     }
   },
   async profiles(target) {
-    const [result, toolsResult, connectionsResult] = await Promise.all([api('/api/v1/profiles'), api('/api/v1/tools'), api('/api/v1/connections')]);
-    const tools = listOf(toolsResult, 'tools'); const connections = listOf(connectionsResult, 'connections');
-    heading(target, 'profiles', action('Create profile', () => formModal('Create profile', [{name: 'name', label: 'Profile name', required: true, placeholder: 'e.g. coding-agents'}, {name: 'slug', label: 'URL slug (optional)', placeholder: 'e.g. coding-agents'}], 'Create profile', data => api('/api/v1/profiles', 'POST', data)), 'primary'));
+    const [result, toolsResult, connectionsResult, clientsResult] = await Promise.all([api('/api/v1/profiles'), api('/api/v1/tools'), api('/api/v1/connections'), api('/api/v1/clients')]);
+    const tools = listOf(toolsResult, 'tools'), connections = listOf(connectionsResult, 'connections'), clients = listOf(clientsResult, 'clients');
+    heading(target, 'profiles', action('Create profile', () => formModal('Create profile', [{name: 'name', label: 'Profile name', required: true, placeholder: 'e.g. Research assistant'}, {name: 'slug', label: 'URL slug (optional)', placeholder: 'e.g. research-assistant'}], 'Create profile', data => api('/api/v1/profiles', 'POST', data), 'New profiles start with no tool access. Choose allowed tools, then select the profile when issuing a client token.'), 'primary'));
     const rows = listOf(result, 'profiles');
-    if (!rows.length) target.append(empty('No profiles yet. Create a profile and select explicit tool grants before issuing client tokens.'));
-    for (const row of rows) target.append(summaryRow(row.name, row.is_default ? 'Default profile' : '', [`Slug: ${row.slug}`], action('Edit grants', async () => {
-      const profile = await api(idPath('profiles', row.id));
-      const grants = profile.grants || profile.profile?.grants || [];
-      const fields = tools.map(tool => ({name: `grant_${tool.id}`, label: tool.gateway_name || tool.name, type: 'select', disabled: !tool.enabled, value: grants.find(g => g.tool_id === tool.id)?.action_class || '', options: [{value: '', label: tool.enabled ? 'No access' : 'Not available (tool is disabled or pending review)'}, {value: tool.risk, label: `Grant ${tool.risk} access`}], hint: `${tool.enabled ? 'Enabled' : 'Disabled or pending review'}. Account: ${connections.find(c => c.id === tool.connection_id)?.alias || tool.connection_id || 'No credentials'}. Risk must match the reviewed tool classification.`}));
-      modal(`Grants: ${row.name}`, p('Risk is explicit. Write and delete calls also require a one-use approval. A disabled or quarantined tool remains unavailable even when granted.', 'hint'), tools.length ? form(fields, 'Save exact grants', async data => {
-        const selected = tools.filter(tool => data[`grant_${tool.id}`]).map(tool => ({tool_id: tool.id, connection_id: tool.connection_id || null, action_class: data[`grant_${tool.id}`]}));
-        await api(idPath('profiles', row.id, '/grants'), 'PUT', {grants: selected}); closeDialog(); await route(); notify('Profile grants saved.');
-      }) : empty('Discover tools on an MCP server before adding grants.'));
-    }, '', 'pencil'), action('Clone', () => formModal('Clone profile', [{name: 'name', label: 'New profile name', required: true, placeholder: 'e.g. read-only-agents'}, {name: 'slug', label: 'New URL slug (optional)', placeholder: 'e.g. read-only-agents'}], 'Clone with grants', data => api(idPath('profiles', row.id, '/clone'), 'POST', data)), '', 'copy')));
+    if (!rows.length) target.append(empty('Create a profile to choose which tools your agent clients can use.'));
+    for (const row of rows) {
+      const assigned = clients.filter(client => client.profile_id === row.id);
+      const remove = () => {
+        if (!assigned.length) return confirmAction('Delete profile', `Delete “${row.name}” and its tool grants? No clients use this profile.`, () => api(idPath('profiles', row.id), 'DELETE'), 'Delete profile');
+        formModal('Delete profile', [{name: 'replacement_profile_id', label: 'Move clients to profile', type: 'select', required: true, options: [{value: '', label: 'Choose replacement access'}, ...rows.filter(other => other.id !== row.id).map(other => ({value: other.id, label: other.name}))]}], 'Move clients and delete profile', data => api(idPath('profiles', row.id), 'DELETE', data), `“${row.name}” is used by: ${assigned.map(client => client.name).join(', ')}. These clients will use the replacement profile’s tool access immediately. Existing tokens stay valid; pending call approvals and this profile’s grants are removed.`);
+      };
+      const item = summaryRow(row.name, row.is_default ? 'Built-in profile' : '', [`${assigned.length} client${assigned.length === 1 ? '' : 's'} using this profile`], action('Edit tool access', () => editGrants(row, tools, connections), 'primary'), action('Clone', () => formModal('Clone profile', [{name: 'name', label: 'New profile name', required: true}, {name: 'slug', label: 'New URL slug (optional)'}], 'Clone with grants', data => api(idPath('profiles', row.id, '/clone'), 'POST', data))), row.is_default ? null : action('Delete profile', remove, 'danger'));
+      item.append(p(row.is_default ? 'The built-in profile cannot be deleted. Clear its tool access to block all tools for its clients.' : 'Edit grants to add or remove allowed tools. Clients sharing this profile share the same access.', 'hint'));
+      target.append(item);
+    }
   },
   async clients(target) {
     const [result, profiles] = await Promise.all([api('/api/v1/clients'), api('/api/v1/profiles')]);
@@ -489,7 +536,7 @@ const renderers = {
     }
     target.append(section('Approve exact call', p('Inspect the complete argument object first. Approval is bound to its fingerprint and can be consumed once. Pass the returned ID in _meta.wheremymcp_approval_id.', 'hint'), form([
       {name: 'client_id', label: 'Client', type: 'select', required: true, options: [{value: '', label: 'Select an active client'}, ...active.map(row => ({value: row.id, label: row.name}))]},
-      {name: 'tool_id', label: 'Write or delete tool', type: 'select', required: true, options: [{value: '', label: 'Select a reviewed tool'}, ...writeable.map(row => ({value: row.id, label: row.gateway_name || row.name}))]},
+      {name: 'tool_id', label: 'Write or delete tool', type: 'select', required: true, options: [{value: '', label: 'Select a reviewed tool'}, ...writeable.map(row => ({value: row.id, label: `${row.name || 'Unnamed tool'}${row.upstream_name ? ` · ${row.upstream_name}` : ''}`}))]},
       {name: 'arguments', label: 'Exact argument object (JSON)', type: 'json', required: true, value: {}, placeholder: '{ "text": "Hello" }'}, {name: 'ttl_seconds', label: 'Approval lifetime (seconds)', type: 'number', value: 120, min: 1, max: 300}
     ], 'Approve one call', async data => {
       if (!data.arguments || typeof data.arguments !== 'object' || Array.isArray(data.arguments)) throw new Error('Arguments must be a JSON object.');

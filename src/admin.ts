@@ -40,7 +40,22 @@ export async function registerAdmin(app:FastifyInstance,hub:Hub,guard:OwnerGuard
       hub.db.prepare('INSERT INTO profile_grant SELECT ?,tool_id,connection_id,action_class FROM profile_grant WHERE profile_id=?').run(id,source);
     })();hub.audit({principal:'owner',action:'profile.clone',resource:id});return reply.code(201).send({profile:hub.db.prepare('SELECT * FROM profile WHERE id=?').get(id)});
   });
-  app.delete('/api/v1/profiles/:id',route,async(request)=>{const id=params(request);const p=hub.db.prepare('SELECT is_default FROM profile WHERE id=?').get(id) as any;if(!p)throw httpError(404,'Profile not found');if(p.is_default)throw httpError(409,'Default profile cannot be deleted');if(hub.db.prepare('SELECT id FROM client WHERE profile_id=?').get(id))throw httpError(409,'Profile is still bound to a client');hub.db.prepare('DELETE FROM profile WHERE id=?').run(id);hub.audit({principal:'owner',action:'profile.delete',resource:id});return {ok:true};});
+  app.delete('/api/v1/profiles/:id',route,async(request)=>{
+    const id=params(request),body=z.object({replacement_profile_id:idSchema.optional()}).strict().parse(request.body??{});
+    hub.db.transaction(()=>{
+      const profile=hub.db.prepare('SELECT is_default FROM profile WHERE id=?').get(id) as {is_default:number}|undefined;
+      if(!profile)throw httpError(404,'Profile not found');if(profile.is_default)throw httpError(409,'Default profile cannot be deleted');
+      const replacement=body.replacement_profile_id;
+      if(replacement===id)throw httpError(400,'Choose a different replacement profile');
+      if(replacement&&!hub.db.prepare('SELECT id FROM profile WHERE id=?').get(replacement))throw httpError(404,'Replacement profile not found');
+      if(hub.db.prepare('SELECT id FROM client WHERE profile_id=?').get(id)){
+        if(!replacement)throw httpError(409,'Choose a replacement profile for the clients using this profile');
+        hub.db.prepare('DELETE FROM approval WHERE client_id IN (SELECT id FROM client WHERE profile_id=?)').run(id);
+        hub.db.prepare('UPDATE client SET profile_id=? WHERE profile_id=?').run(replacement,id);
+      }
+      hub.db.prepare('DELETE FROM profile WHERE id=?').run(id);hub.audit({principal:'owner',action:'profile.delete',resource:id});
+    })();return {ok:true};
+  });
   app.get('/api/v1/clients',route,async()=>({clients:hub.db.prepare('SELECT id,name,kind,profile_id,status,expires_at,created_at,last_used FROM client ORDER BY created_at').all()}));
   app.post('/api/v1/clients',route,async(request,reply)=>{
     const body=z.object({name:z.string().trim().min(1).max(100),kind:z.enum(['codex','claude','cursor','gemini','hermes','other']),profile_id:idSchema,ttl_days:z.number().int().min(1).max(3650).optional()}).strict().parse(request.body);
