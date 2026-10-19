@@ -21,7 +21,7 @@ Development release. See [current limitations](#current-limitations) and the [ve
 | Profiles and clients | Select whole MCP servers or all available tools for a profile. Exact tools and account bindings stay enforced. Issue, rotate, expire or revoke client tokens. |
 | Multiple accounts | Keep account connections under distinct aliases and stable IDs, with encrypted provider credentials. |
 | One-use approvals | Authorize each write or delete call for one client, one tool and one exact argument object. |
-| Management MCP | Manage servers, tool approval, profiles and agent clients through the built-in `/mcp/manage` endpoint with separate scoped tokens. |
+| Management MCP | Optionally enable Read/Write/Delete administration on a client token. The same `/mcp` connection serves provider and management tools. |
 | Owner dashboard | Manage connections, servers, grants, clients, skills, MFA, audit events and backups. |
 | Backup and portability | Create and download encrypted backups, restore offline, and preview credential-free configuration imports. |
 | Reviewed skills | Preview imported files, approve them, and explicitly plan/apply file sync through the CLI. |
@@ -97,17 +97,17 @@ The dashboard also generates configurations for Claude Code, Cursor and Gemini, 
 
 ## Manage WhereMyMCP through MCP
 
-Open **Management MCP** in the dashboard and issue a dedicated token. Read is selected by default; add Write for configuration changes and Delete for removal/revocation. Confirm with your owner password and authenticator code when MFA is enabled. Save the token once, then use the generated Codex configuration:
+Keep the same `/mcp` URL and client token used for provider tools. In **Agent clients**, choose **Edit management access** on the client you want to authorize, or select management access while issuing a client token. Management starts off. Choose Read for inspection, Read + Write for configuration changes, or Read + Write + Delete for full management. Confirm your owner password and authenticator code when MFA is enabled.
 
 ```toml
-[mcp_servers.wheremymcp_management]
-url = "http://127.0.0.1:8080/mcp/manage"
-bearer_token_env_var = "WHEREMYMCP_MANAGEMENT_TOKEN"
+[mcp_servers.wheremymcp]
+url = "http://127.0.0.1:8080/mcp"
+bearer_token_env_var = "WHEREMYMCP_TOKEN"
 ```
 
-Set `WHEREMYMCP_MANAGEMENT_TOKEN` in the environment used to launch Codex, then reload the client. This endpoint is built in; do not register it as an upstream or add profile grants. Ordinary gateway tokens cannot access it.
+Existing client configuration needs no new token, URL or second MCP entry when you enable management access. Reload the client's MCP connection to refresh its tools. **Client config** generates Codex, Claude, Cursor and Gemini formats, plus Hermes/other transport guidance. Provider tools remain controlled by the client's profile; built-in `wheremymcp_manage_*` tools follow its management permissions.
 
-Example request: “Register this MCP server, approve its current tools, and give Default access to that server.” Management Write can issue ordinary agent tokens and change access; treat it as configuration administration. Provider consent, owner security and management-token issuance stay in the dashboard. See [Management MCP](docs/management-mcp.md) for scopes, tools and limitations.
+Example request: “Register this MCP server, approve its current tools, and give Default access to that server.” Management Write can issue ordinary agent tokens and change access; treat it as configuration administration. Only the owner can grant management access or rotate a management-enabled client token. Provider consent and owner security stay in the dashboard. Earlier separate `/mcp/manage` connections remain compatible. See [Management MCP](docs/management-mcp.md) for scopes, tools and migration.
 
 ## Connections and integrations
 

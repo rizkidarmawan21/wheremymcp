@@ -10,7 +10,7 @@ Root creates these tables in `src/core.ts` before workers run. All opaque IDs ar
 - `session(id TEXT PRIMARY KEY, token_hash TEXT UNIQUE, csrf_hash TEXT, csrf_token TEXT encrypted, created_at INTEGER, last_used INTEGER, expires_at INTEGER)`.
 - `recovery_code(hash TEXT PRIMARY KEY)`.
 - `profile(id TEXT PRIMARY KEY, name TEXT, slug TEXT UNIQUE, is_default INTEGER, created_at INTEGER)`.
-- `client(id TEXT PRIMARY KEY, name TEXT, kind TEXT, profile_id TEXT REFERENCES profile, token_hash TEXT UNIQUE, status TEXT, expires_at INTEGER, created_at INTEGER, last_used INTEGER)`.
+- `client(id TEXT PRIMARY KEY, name TEXT, kind TEXT, profile_id TEXT REFERENCES profile, token_hash TEXT UNIQUE, status TEXT, expires_at INTEGER, created_at INTEGER, last_used INTEGER, management_scopes TEXT JSON array DEFAULT '[]')`; management is opt-in and default-off for existing clients.
 - `management_client(id TEXT PRIMARY KEY, name TEXT, scopes TEXT JSON array, token_hash TEXT UNIQUE, status TEXT, expires_at INTEGER NOT NULL, created_at INTEGER, last_used INTEGER)`; separate configuration-administration tokens, never ordinary gateway tokens.
 - `connection(id TEXT PRIMARY KEY, provider TEXT, alias TEXT UNIQUE, status TEXT, identity TEXT, scopes TEXT JSON array, credential TEXT encrypted, config TEXT JSON object, expires_at INTEGER, created_at INTEGER)`.
 - `oauth_state(id TEXT PRIMARY KEY, connection_id TEXT, verifier TEXT encrypted, session_id TEXT, expires_at INTEGER)`.
@@ -21,7 +21,7 @@ Root creates these tables in `src/core.ts` before workers run. All opaque IDs ar
 - `audit_event(id TEXT PRIMARY KEY, ts INTEGER, principal TEXT, action TEXT, resource TEXT, outcome TEXT, detail TEXT, latency_ms INTEGER, profile_id TEXT, account_id TEXT, account_alias TEXT)`; detail contains controlled codes only. Profile/account fields support indexed audit filters and historical alias search.
 - `skill(id TEXT PRIMARY KEY, name TEXT, source TEXT, digest TEXT, content TEXT JSON file map, approved INTEGER, created_at INTEGER)`.
 - `settings(key TEXT PRIMARY KEY, value TEXT)`.
-- `schema_migration(version INTEGER PRIMARY KEY, applied_at INTEGER)`; current schema version 3. Every upgrade runs in a transaction after checkpointing and writing a mode-0600 pre-migration SQLite copy.
+- `schema_migration(version INTEGER PRIMARY KEY, applied_at INTEGER)`; current schema version 4. Every upgrade runs in a transaction after checkpointing and writing a mode-0600 pre-migration SQLite copy.
 
 ## Core types
 
@@ -47,8 +47,8 @@ Root creates these tables in `src/core.ts` before workers run. All opaque IDs ar
 - `GET /api/v1/profiles/:id` returns profile with `grants`; `PUT /api/v1/profiles/:id/grants` body `{grants:[{tool_id,connection_id,action_class}]}`.
 - `POST /api/v1/profiles/:id/clone` body `{name,slug?}`.
 - `DELETE /api/v1/profiles/:id` accepts optional `{replacement_profile_id}`. Built-in default deletion is refused. Bound clients require an explicit different existing replacement; reassignment, pending-approval removal, profile/grant deletion and audit are atomic. Client tokens and revoked status are preserved; replacement grants are not changed.
-- `GET|POST /api/v1/clients`; POST `{name,kind,profile_id,ttl_days?}` returns `{client,token}` once.
-- `POST /api/v1/clients/:id/revoke`, `POST /api/v1/clients/:id/rotate` returns `{token}` once.
+- `GET|POST /api/v1/clients`; POST `{name,kind,profile_id,ttl_days?,management_scopes?,password?,totp?}` returns `{client,token}` once. Nonempty management scopes require authenticated owner step-up before insertion. Public client metadata returns parsed management scopes, never token hashes.
+- `POST /api/v1/clients/:id/revoke`, `POST /api/v1/clients/:id/rotate` returns `{token}` once. Rotation of management-enabled clients requires owner step-up `{password,totp?}` and cannot be delegated through management tools. Issuance/rotation are limited to 8 requests/minute.
 - `GET /api/v1/clients/:id/config?kind=codex|claude|cursor|gemini` returns `{snippet,instructions}` with environment-variable token reference, never a stored secret.
 - `GET|POST /api/v1/connections`; POST `{provider,alias,secret?,identity?,scopes?,config?}`. Generic header credentials use provider `api_key` or `bearer`; config contains `header_name` only for API key, plus optional `allowed_origin`.
 - `PATCH /api/v1/connections/:id` body alias/secret update; `POST /api/v1/connections/:id/revoke`.
@@ -87,7 +87,11 @@ MCP tool listing joins current client, profile, grants, tools, servers and accou
 
 ## Management MCP contracts
 
-`POST /mcp/manage` implements scoped MCP tool discovery and invocation. GET/DELETE require a valid management bearer token and return 405; transport is stateless. Tokens are rechecked for each request/call. Read, Write and Delete are independent scopes. Full catalog and delegation boundaries: [Management MCP](management-mcp.md).
+`POST /mcp` serves both profile-granted provider tools and optional `wheremymcp_manage_*` management tools using one client token. Read, Write and Delete management scopes are independent from profile grants; each request/call rechecks current token status, expiry and permissions. Combined discovery uses the existing 64-tool pages. Emergency stop blocks provider calls while scoped management remains available. Full catalog and delegation boundaries: [Management MCP](management-mcp.md).
+
+`PUT /api/v1/clients/:id/management` accepts `{management_scopes,password?,totp?}` under the owner session and CSRF guard, limited to 8 requests/minute. Nonempty scopes require owner password/MFA step-up. Clearing all scopes requires the owner session/CSRF. This does not rotate the token or change profile grants. Delegated management tools cannot call this API or grant management scopes during client creation.
+
+Legacy `POST /mcp/manage` retains separate management-token discovery/calls under the original bare tool names. GET/DELETE require a valid management bearer token and return 405; transport is stateless. Existing token APIs below remain for compatibility. The dashboard directs new setup to unified Agent clients.
 
 Owner-session and CSRF protected token APIs:
 

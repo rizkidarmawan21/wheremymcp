@@ -59,6 +59,15 @@ test('management creates a server, bulk grants access and issues a working agent
  const issuedAgent=value(await manager.callTool({name:'client_create',arguments:{name:'Managed agent',kind:'codex',profile_id:profile.id}}));
  const agent=await f.connect(issuedAgent.token,'/mcp'),agentTools=(await agent.listTools()).tools;assert.equal(agentTools.length,2);
  const read=agentTools.find(tool=>tool.description==='Read a project')!;assert.equal((await agent.callTool({name:read.name,arguments:{}})).content[0]?.type,'text');
+ for(const importedName of ['wheremymcp_manage_custom','wheremymcp_manage_servers_list']){
+  f.hub.db.prepare("UPDATE tool SET gateway_name=? WHERE upstream_id=? AND name='read_project'").run(importedName,server.id);
+  await agent.listTools();assert.equal((await agent.callTool({name:importedName,arguments:{}})).content[0]?.type,'text');
+  assert.match(JSON.stringify(await agent.callTool({name:importedName,arguments:{}})),/fixture-ok/);
+ }
+ assert.equal((await f.owner('PUT',`/api/v1/clients/${issuedAgent.client.id}/management`,{management_scopes:['read'],password})).statusCode,200);
+ const combined=(await agent.listTools()).tools;assert.equal(new Set(combined.map(tool=>tool.name)).size,combined.length);
+ assert.ok(combined.some(tool=>tool.name==='wheremymcp_manage_servers_list_builtin_1'));
+ assert.equal(value(await agent.callTool({name:'wheremymcp_manage_servers_list_builtin_1',arguments:{}})).upstreams.length,1);
  const write=agentTools.find(tool=>tool.description==='Write a project')!;await assert.rejects(agent.callTool({name:write.name,arguments:{}}));
  const audit=f.hub.db.prepare("SELECT principal FROM audit_event WHERE action='upstream.create' AND resource=?").get(server.id) as any;assert.equal(audit.principal,'management:'+issued.client.id);
  assert.equal((await manager.callTool({name:'server_delete',arguments:{id:server.id,confirm:false}})).isError,true);
@@ -107,4 +116,61 @@ test('management dispatch retains TLS/proxy checks on external public-mode reque
  }}));
  const result=await client.callTool({name:'diagnostics_get',arguments:{}});assert.equal(value(result).public_mode,true);
  assert.equal((await f.app.inject({url:'/api/v1/profiles',headers:{host:f.host,authorization:'Bearer '+issued.token}})).statusCode,403);
+});
+
+test('one agent token gains scoped management on the same MCP endpoint only after owner step-up',async t=>{
+ const f=await fixture(t),profileId=f.hub.db.prepare('SELECT id FROM profile WHERE is_default=1').pluck().get() as string;
+ const issued=await f.owner('POST','/api/v1/clients',{name:'Unified client',kind:'codex',profile_id:profileId});assert.equal(issued.statusCode,201);
+ const token=issued.json().token,clientId=issued.json().client.id,c=await f.connect(token,'/mcp');assert.equal((await c.listTools()).tools.length,0);
+ const access=`/api/v1/clients/${clientId}/management`;
+ assert.equal((await f.owner('PUT',access,{management_scopes:['read','write'],password:'wrong'})).statusCode,403);
+ assert.equal((await f.owner('PUT',access,{management_scopes:['read','write'],password})).statusCode,200);
+ let tools=(await c.listTools()).tools;assert.equal(tools.length,21);assert.ok(tools.some(tool=>tool.name==='wheremymcp_manage_servers_list'));assert.equal(tools.some(tool=>tool.name==='wheremymcp_manage_server_delete'),false);
+ const created=value(await c.callTool({name:'wheremymcp_manage_profile_create',arguments:{name:'Unified managed'}})).profile;
+ assert.equal(f.hub.db.prepare("SELECT principal FROM audit_event WHERE action='profile.create' AND resource=?").pluck().get(created.id),'management:'+clientId);
+ assert.equal((await c.callTool({name:'wheremymcp_manage_client_create',arguments:{name:'Escalation',kind:'codex',profile_id:profileId,management_scopes:['delete'],password}})).isError,true);
+ assert.equal((await c.callTool({name:'wheremymcp_manage_client_rotate',arguments:{id:clientId}})).isError,true,'management Write must not steal a privileged token');
+ assert.equal((await f.app.inject({method:'PUT',url:access,headers:{host:f.host,authorization:'Bearer '+token},payload:{management_scopes:['delete'],password}})).statusCode,403);
+ assert.equal((await f.owner('POST',`/api/v1/clients/${clientId}/rotate`)).statusCode,403,'privileged rotation needs owner verification');
+ const rotated=await f.owner('POST',`/api/v1/clients/${clientId}/rotate`,{password});assert.equal(rotated.statusCode,200);await assert.rejects(c.listTools());
+ const replacement=await f.connect(rotated.json().token,'/mcp');assert.equal((await replacement.listTools()).tools.length,21);
+ assert.equal((await f.owner('PUT',access,{management_scopes:[]})).statusCode,200);assert.equal((await replacement.listTools()).tools.length,0);assert.equal((await replacement.callTool({name:'wheremymcp_manage_servers_list',arguments:{}})).isError,true);
+ await f.owner('POST',`/api/v1/clients/${clientId}/revoke`);await assert.rejects(replacement.listTools());
+});
+
+test('owner can issue one privileged client atomically, but delegated managers cannot rotate it',async t=>{
+ const f=await fixture(t),profileId=f.hub.db.prepare('SELECT id FROM profile WHERE is_default=1').pluck().get() as string;
+ const body={name:'Owner admin',kind:'claude',profile_id:profileId,management_scopes:['read','write','delete']};
+ assert.equal((await f.owner('POST','/api/v1/clients',body)).statusCode,403);
+ assert.equal(f.hub.db.prepare('SELECT count(*) FROM client').pluck().get(),0);
+ const response=await f.owner('POST','/api/v1/clients',{...body,password});assert.equal(response.statusCode,201,response.body);
+ const issued=response.json(),manager=await f.connect(issued.token,'/mcp');assert.equal((await manager.listTools()).tools.length,24);
+ const legacy=await f.issue(['read','write']),legacyClient=await f.connect(legacy.token);
+ assert.equal((await legacyClient.callTool({name:'client_rotate',arguments:{id:issued.client.id}})).isError,true);
+ for(const kind of ['codex','claude','cursor','gemini','hermes','other']){
+  const config=(await f.owner('GET',`/api/v1/clients/${issued.client.id}/config?kind=${kind}`)).json();assert.ok(config.snippet.includes('/mcp'));assert.equal(config.snippet.includes('/mcp/manage'),false);assert.equal(config.snippet.includes(issued.token),false);
+ }
+ const metadata=await f.owner('GET','/api/v1/clients');assert.deepEqual(metadata.json().clients[0].management_scopes,['read','write','delete']);assert.equal(metadata.body.includes('token_hash'),false);
+ f.hub.db.prepare('UPDATE client SET expires_at=? WHERE id=?').run(Date.now()-1,issued.client.id);await assert.rejects(manager.listTools());
+});
+
+test('merged provider and management discovery paginates without duplicates and stop blocks only provider access',async t=>{
+ const f=await fixture(t),profileId=f.hub.db.prepare('SELECT id FROM profile WHERE is_default=1').pluck().get() as string;
+ const issued=await f.owner('POST','/api/v1/clients',{name:'Paged manager',kind:'codex',profile_id:profileId,management_scopes:['read'],password});assert.equal(issued.statusCode,201,issued.body);
+ const c=await f.connect(issued.json().token,'/mcp');
+ f.hub.db.prepare("INSERT INTO upstream(id,name,url,status,created_at) VALUES('fixture','Fixture','https://example.invalid/mcp','active',0)").run();
+ for(let i=0;i<65;i++){const id='fixture-'+i;f.hub.db.prepare(`INSERT INTO tool(id,upstream_id,name,gateway_name,input_schema,fingerprint,approved_fingerprint,risk,enabled) VALUES(?,'fixture',?,?,'{"type":"object"}','fp','fp','read',1)`).run(id,id,id);f.hub.db.prepare("INSERT INTO profile_grant VALUES(?,?,NULL,'read')").run(profileId,id);}
+ const all=await c.listTools(),first=await c.listTools({cursor:'0'}),second=await c.listTools({cursor:first.nextCursor});assert.equal(all.tools.length,75);assert.equal(first.tools.length,64);assert.equal(second.tools.length,11);assert.equal(second.nextCursor,undefined);assert.equal(new Set([...first.tools,...second.tools].map(tool=>tool.name)).size,75);
+ f.hub.setSetting('emergency_stop','true');assert.equal((await c.listTools()).tools.length,10);assert.equal(value(await c.callTool({name:'wheremymcp_manage_diagnostics_get',arguments:{}})).schema_version,4);await assert.rejects(c.callTool({name:'fixture-0',arguments:{}}));
+});
+
+test('unified management issuance requires the owner second factor when MFA is enabled',async t=>{
+ const {TOTP,Secret}=await import('otpauth'),f=await fixture(t),secret=new Secret({size:20});
+ f.hub.db.prepare('UPDATE owner SET mfa_enabled=1,totp_secret=? WHERE id=1').run(f.hub.seal(secret.base32,'owner:totp'));
+ const profile_id=f.hub.db.prepare('SELECT id FROM profile WHERE is_default=1').pluck().get();
+ const body={name:'MFA unified',kind:'codex',profile_id,management_scopes:['read'],password};
+ assert.equal((await f.owner('POST','/api/v1/clients',body)).statusCode,403);
+ assert.equal(f.hub.db.prepare('SELECT count(*) FROM client').pluck().get(),0);
+ const otp=new TOTP({issuer:'WhereMyMCP',label:'Owner',algorithm:'SHA1',digits:6,period:30,secret});
+ assert.equal((await f.owner('POST','/api/v1/clients',{...body,totp:otp.generate()})).statusCode,201);
 });

@@ -1,34 +1,41 @@
 # Management MCP
 
-WhereMyMCP exposes two separate Streamable HTTP MCP endpoints:
+Use one Streamable HTTP MCP connection at `/mcp` and one token per client. It serves profile-granted provider tools and optional management tools together.
 
 | Endpoint | Purpose | Credential |
 | --- | --- | --- |
-| `/mcp` | Call approved provider tools through profile grants | Agent client token |
-| `/mcp/manage` | Manage this WhereMyMCP instance | Management token with Read, Write and/or Delete scopes |
+| `/mcp` | Provider tools plus owner-enabled management tools | One client token |
+| `/mcp/manage` | Compatibility for earlier separate management clients | Existing legacy management token |
 
-The management endpoint is built in. Do not register it in MCP servers or grant it through a profile. Using the management endpoint does not require importing another server.
+Management tools are built in. Do not register WhereMyMCP as an upstream or add these tools to profile grants. The client profile governs provider tools; the client's separate permission field governs management authority using the same credential.
 
 ## Setup
 
-1. Sign in to the owner dashboard and open **Management MCP**.
-2. Choose **Issue management token**, enter a client name and select scopes. Read is selected initially. Add Write only when the agent should change configuration; add Delete when it should remove objects or revoke clients.
-3. Select an expiry from 1 to 365 days; the default is 30 days. Confirm the owner password and authenticator code when MFA is enabled.
-4. Save the token shown once. Set `WHEREMYMCP_MANAGEMENT_TOKEN` in the environment used to launch Codex. Paste the generated configuration into the client's configuration file and reload its MCP connection.
+1. Sign in to the owner dashboard and open **Agent clients**.
+2. For an existing client, choose **Edit management access**. For a new client, choose **Issue client token** and select the usual profile and client application.
+3. Set **Manage WhereMyMCP** to Read, Read + Write, or Read + Write + Delete. It starts off. Owner password and authenticator fields appear when permission is selected; MFA is required when enabled for the owner.
+4. Save. Existing clients keep their token, endpoint and profile grants. New client tokens appear once. Reload the MCP client to refresh its tool list.
+5. Use **Client config** for Codex, Claude, Cursor or Gemini output, or Hermes/other transport guidance. Every format references the same `/mcp` endpoint and `WHEREMYMCP_TOKEN`.
 
 ```toml
-[mcp_servers.wheremymcp_management]
-url = "http://127.0.0.1:8080/mcp/manage"
-bearer_token_env_var = "WHEREMYMCP_MANAGEMENT_TOKEN"
+[mcp_servers.wheremymcp]
+url = "http://127.0.0.1:8080/mcp"
+bearer_token_env_var = "WHEREMYMCP_TOKEN"
 ```
 
-The environment variable must reach the process running Codex; exporting it in another terminal does not change an already running desktop app. Keep tokens out of committed configuration files. Other MCP clients can use the same endpoint with `Authorization: Bearer <management-token>`; their native configuration syntax needs separate verification.
+The environment variable must reach the process running the client; exporting it in another terminal does not change an already running desktop app. Keep tokens out of committed configuration files. Native interoperability outside the tested Codex version still needs separate verification.
 
-Rotation requires owner password/MFA and immediately invalidates the old token. Revocation takes effect on the next request, including for an already connected client. Expired or revoked management clients require a new issuance. The dashboard never retrieves an existing token.
+One expiry, rotation and revocation controls both provider and management access. Rotation of a management-enabled token requires owner password/MFA and immediately invalidates the old token. Revocation and management-permission changes apply on the next request, including for an already connected client. Clearing management access keeps provider access and the token intact. The dashboard never retrieves an existing token.
+
+## Earlier installations
+
+Schema v4 preserves all existing client token hashes, grants and legacy management clients. Existing agent clients gain an empty management scope list; no client becomes an administrator automatically. Existing `/mcp/manage` connections continue to work with their `wmm_` token and original tool names. Their rotate/revoke controls remain visible in **Management MCP**. To consolidate, enable management on the agent client, verify its shared `/mcp` connection, then revoke the old separate management token.
 
 ## Tools and scopes
 
-A token sees only tools permitted by its scopes. Each call also rechecks current token status, expiry and scope. Scopes are independent: a Write-only token cannot list registry state.
+A token sees management tools permitted by its scopes, alongside provider tools permitted by its profile. Each call rechecks current token status, expiry and scope. Scopes are independent in the API; the dashboard offers common permission combinations.
+
+The table lists base operation names. On `/mcp`, names carry the `wheremymcp_manage_` prefix, for example `wheremymcp_manage_servers_list`. Imported provider tool names remain valid; a collision gives the built-in tool an available `_builtin_N` alias. Discovery returns the exact current names without duplicates.
 
 | Scope | Tools |
 | --- | --- |
@@ -38,7 +45,7 @@ A token sees only tools permitted by its scopes. Each call also rechecks current
 
 Write grants configuration-administrator authority over servers, profile access and ordinary agent credentials. A management agent can issue an ordinary client with a broad profile. This is intentional delegation; give Read to agents that should only inspect the instance. Management calls themselves do not use the ordinary gateway's one-use approvals. Ordinary agent write/delete calls still require those approvals.
 
-`client_create` and `client_rotate` return a new ordinary agent token once. The MCP client, conversation and tool-result logs can therefore receive that secret. Keep that conversation private. Connection reads never return provider credentials, and client lists never return token hashes.
+`client_create` can issue only ordinary clients, and `client_rotate` can rotate only clients without management authority. They return the new ordinary token once, so the MCP client, conversation and tool-result logs can receive that secret. Only the owner can grant management access or rotate a management-enabled client. Connection reads never return provider credentials; client lists never return token hashes.
 
 ## Example workflow
 
@@ -55,21 +62,23 @@ Delete/revoke tools require `confirm: true`. Enabling server tools requires `tru
 ## Bounds and security
 
 - Tools are a fixed catalog mapped to existing validated application handlers. There is no generic HTTP, SQL, shell or file-execution tool.
-- Management tokens are random `wmm_` credentials. Only SHA-256 hashes are stored. Issuance/rotation require an authenticated owner session, CSRF protection, rate limiting and password/MFA step-up.
-- Ordinary gateway tokens cannot authenticate to `/mcp/manage`. Management tokens cannot authenticate to `/mcp` or directly to owner REST endpoints.
-- Provider credential editing/consent, owner password/MFA/recovery, management-token issuance, backup/restore and key rotation are not exposed through this catalog.
-- An internal one-use dispatch capability binds each reused handler request to the authenticated manager, scope, method and URL. HTTP clients cannot supply this capability themselves.
+- Unified clients keep the existing random `umcp_` token format. Only SHA-256 hashes are stored. Granting management permissions and rotating privileged tokens require an authenticated owner session, CSRF protection, rate limiting and password/MFA step-up.
+- Provider-only tokens have no management authority. No client bearer token authenticates directly to owner REST. Legacy management tokens remain specific to `/mcp/manage`.
+- Provider credential editing/consent, owner password/MFA/recovery, management-permission grants, backup/restore and key rotation are not exposed through this catalog.
+- An internal one-use dispatch capability binds each reused handler request to the authenticated client, credential source, scope, method and URL. HTTP clients cannot supply this capability themselves.
 - Domain changes and accepted/denied management calls identify `management:<client-id>` in audit events. Arguments, results and secret tokens are not written to audit events.
 - `tools_list` uses database pagination: default 25, maximum 100 results, optional server/search filters and optional full metadata. Compact results omit schemas and bound descriptions to 240 characters. `profile_get` paginates grants; `audit_list` defaults to 25 and permits at most 100 events. Tool responses over 1 MiB return a controlled error requesting a smaller page.
 - Existing registry bounds remain: 128 servers, 256 discovered tools per server, 5000 exact grants per profile. Large registries need multiple profiles.
-- Restore with `--invalidate-clients` revokes both ordinary and management tokens in schema-v3 backups. Restore retains management tokens when client invalidation is not requested. Version-1/2 backups remain supported.
+- Restore with `--invalidate-clients` revokes unified clients and any legacy management tokens. Without invalidation, existing permissions are retained. Older supported backups migrate forward without granting management implicitly.
 
 The gateway emergency stop blocks ordinary provider calls. Management access remains available to inspect and repair configuration; use dashboard token revocation to stop a management client.
 
 ## Verification
 
-`tests/management.test.ts` exercises real HTTP SDK discovery/calls, server setup, bulk approval/grants, a working ordinary client, continued gateway write approval, scope denial, forged dispatch rejection, owner REST isolation, MFA step-up, token rotation/revocation/expiry and audit attribution. The browser suite issues, rotates and revokes management tokens through the actual UI and invokes a management tool with the SDK. Backup tests verify management-token preservation and invalidation.
+`tests/management.test.ts` exercises real HTTP SDK discovery/calls, server setup, bulk approval/grants, provider and management tools using one token, continued provider write approval, scope changes, owner-only permission grants/privileged rotation, imported name collisions, merged pagination, emergency-stop behavior, MFA, expiry/revocation and audit attribution. The browser suite issues a unified token, edits management permissions, generates Claude configuration, invokes management through `/mcp`, rotates the token while preserving the secret dialog and revokes it. Migration tests verify v3 credential preservation/default-off permissions; backup tests verify token preservation/invalidation.
 
 Screenshots use a disposable test owner: [desktop](evidence/management-1280.png), [mobile](evidence/management-390.png). Live provider OAuth consent and other clients' native configuration formats are outside these fixture checks.
 
-Local verification on 2026-10-19: full suite **76/76**, typecheck/build and dependency audit passed. The initialized Docker instance upgraded from schema v2 to v3; hashes of existing owner, profile, client, connection, server, tool and grant rows were unchanged. Served dashboard JavaScript matched source. A temporary Read token exercised five management SDK operations and scope denial on the running instance. Native Codex CLI 0.163.0 discovered all 10 Read tools through an isolated process configuration with no tool-list error; the existing ordinary gateway still exposed 138 tools. The temporary verification token was removed. No persistent management token or global Codex configuration was installed by this verification.
+The earlier separate-endpoint implementation passed 76 tests and native Codex CLI 0.163.0 discovery before consolidation. The unified implementation has additional scope, migration, name-collision, lifecycle and browser coverage described above. These fixture checks do not establish live provider consent or native compatibility with every generated client format.
+
+Unified verification on 2026-10-19 passed **81/81 tests**, typecheck/build, dependency audit and static security rules. The local initialized Docker instance migrated from schema v3 to v4 after an encrypted backup; existing credentials, profiles, grants and provider rows were preserved, and existing clients retained empty management scopes. Served dashboard JavaScript and compiled application files matched the verified build. A temporary Read-enabled client exposed **148 tools on one `/mcp` connection** through both the HTTP SDK and native Codex CLI 0.163.0: 138 provider tools and 10 management tools, with no native tool-list error. Write and direct owner-REST access were denied. The temporary client was deleted; persistent user permissions and global Codex configuration were not changed.

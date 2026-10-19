@@ -2,10 +2,13 @@ import { randomBytes, randomUUID } from 'node:crypto';
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { Hub, hashToken, httpError, SCHEMA_VERSION, type OwnerGuard } from './core.js';
+import {managementScopes,verifyOwnerStepUp} from './management.js';
 
 const idSchema=z.string().uuid();
 const profileInput=z.object({name:z.string().trim().min(1).max(100),slug:z.string().regex(/^[a-z0-9][a-z0-9-]{0,63}$/).optional()}).strict();
 const params=(request:any)=>idSchema.parse(request.params.id);
+const clientColumns='id,name,kind,profile_id,status,expires_at,created_at,last_used,management_scopes';
+const publicClient=(row:any)=>({...row,management_scopes:JSON.parse(row.management_scopes)});
 export async function registerAdmin(app:FastifyInstance,hub:Hub,guard:OwnerGuard):Promise<void>{
   const route={preHandler:guard};
   const parseDetail=(event:any)=>{try{const detail=JSON.parse(event.detail);if(detail&&typeof detail==='object'&&!Array.isArray(detail)){Object.assign(event,detail);event.detail=detail.code||'';delete event.code;}}catch{/* Older metadata-only events use a plain controlled code. */}return event;};
@@ -56,15 +59,22 @@ export async function registerAdmin(app:FastifyInstance,hub:Hub,guard:OwnerGuard
       hub.db.prepare('DELETE FROM profile WHERE id=?').run(id);hub.audit({principal:'owner',action:'profile.delete',resource:id});
     })();return {ok:true};
   });
-  app.get('/api/v1/clients',route,async()=>({clients:hub.db.prepare('SELECT id,name,kind,profile_id,status,expires_at,created_at,last_used FROM client ORDER BY created_at').all()}));
-  app.post('/api/v1/clients',route,async(request,reply)=>{
-    const body=z.object({name:z.string().trim().min(1).max(100),kind:z.enum(['codex','claude','cursor','gemini','hermes','other']),profile_id:idSchema,ttl_days:z.number().int().min(1).max(3650).optional()}).strict().parse(request.body);
+  app.get('/api/v1/clients',route,async()=>({clients:hub.db.prepare(`SELECT ${clientColumns} FROM client ORDER BY created_at`).all().map(publicClient)}));
+  app.post('/api/v1/clients',{...route,config:{rateLimit:{max:8,timeWindow:'1 minute'}}},async(request,reply)=>{
+    const body=z.object({name:z.string().trim().min(1).max(100),kind:z.enum(['codex','claude','cursor','gemini','hermes','other']),profile_id:idSchema,ttl_days:z.number().int().min(1).max(3650).optional(),management_scopes:managementScopes.default([]),password:z.string().max(1024).optional(),totp:z.string().max(10).optional()}).strict().parse(request.body);
+    if(body.management_scopes.length)await verifyOwnerStepUp(hub,request,body);
     if(!hub.db.prepare('SELECT id FROM profile WHERE id=?').get(body.profile_id))throw httpError(400,'Profile not found');
-    const id=randomUUID(),token=`umcp_${randomBytes(32).toString('base64url')}`;hub.db.prepare('INSERT INTO client(id,name,kind,profile_id,token_hash,status,expires_at,created_at) VALUES(?,?,?,?,?,?,?,?)').run(id,body.name,body.kind,body.profile_id,hashToken(token),'active',body.ttl_days?Date.now()+body.ttl_days*86400_000:null,Date.now());
-    hub.audit({principal:'owner',action:'client.create',resource:id});return reply.code(201).send({client:hub.db.prepare('SELECT id,name,kind,profile_id,status,expires_at,created_at,last_used FROM client WHERE id=?').get(id),token});
+    const id=randomUUID(),token=`umcp_${randomBytes(32).toString('base64url')}`;hub.db.prepare('INSERT INTO client(id,name,kind,profile_id,token_hash,status,expires_at,created_at,management_scopes) VALUES(?,?,?,?,?,?,?,?,?)').run(id,body.name,body.kind,body.profile_id,hashToken(token),'active',body.ttl_days?Date.now()+body.ttl_days*86400_000:null,Date.now(),JSON.stringify(body.management_scopes));
+    hub.audit({principal:'owner',action:'client.create',resource:id});return reply.code(201).send({client:publicClient(hub.db.prepare(`SELECT ${clientColumns} FROM client WHERE id=?`).get(id)),token});
   });
   app.post('/api/v1/clients/:id/revoke',route,async(request)=>{const id=params(request);if(!hub.db.prepare("UPDATE client SET status='revoked' WHERE id=?").run(id).changes)throw httpError(404,'Client not found');hub.db.prepare('DELETE FROM approval WHERE client_id=?').run(id);hub.audit({principal:'owner',action:'client.revoke',resource:id});return {ok:true};});
-  app.post('/api/v1/clients/:id/rotate',route,async(request)=>{const id=params(request),client=hub.db.prepare('SELECT expires_at FROM client WHERE id=?').get(id) as any;if(!client)throw httpError(404,'Client not found');if(client.expires_at!==null&&client.expires_at<=Date.now())throw httpError(409,'Expired client cannot be rotated. Create a new client with a new expiry period.');const token=`umcp_${randomBytes(32).toString('base64url')}`;hub.db.prepare("UPDATE client SET token_hash=?,status='active' WHERE id=?").run(hashToken(token),id);hub.db.prepare('DELETE FROM approval WHERE client_id=?').run(id);hub.audit({principal:'owner',action:'client.rotate',resource:id});return {token};});
+  app.post('/api/v1/clients/:id/rotate',{...route,config:{rateLimit:{max:8,timeWindow:'1 minute'}}},async(request)=>{
+    const id=params(request),client=hub.db.prepare('SELECT expires_at,management_scopes FROM client WHERE id=?').get(id) as any;
+    if(!client)throw httpError(404,'Client not found');if(client.expires_at!==null&&client.expires_at<=Date.now())throw httpError(409,'Expired client cannot be rotated. Create a new client with a new expiry period.');
+    // Delegated rotation must never reveal a token that carries management authority.
+    if(JSON.parse(client.management_scopes).length)await verifyOwnerStepUp(hub,request,z.object({password:z.string().max(1024).optional(),totp:z.string().max(10).optional()}).strict().parse(request.body??{}));
+    const token=`umcp_${randomBytes(32).toString('base64url')}`;hub.db.prepare("UPDATE client SET token_hash=?,status='active' WHERE id=?").run(hashToken(token),id);hub.db.prepare('DELETE FROM approval WHERE client_id=?').run(id);hub.audit({principal:'owner',action:'client.rotate',resource:id});return {token};
+  });
   app.get('/api/v1/clients/:id/config',route,async(request)=>{
     const id=params(request),client=hub.db.prepare('SELECT kind FROM client WHERE id=?').get(id) as any;if(!client)throw httpError(404,'Client not found');
     const kind=z.enum(['codex','claude','cursor','gemini','hermes','other']).parse((request.query as any).kind||client.kind);const url=`${hub.config.origin}/mcp`;

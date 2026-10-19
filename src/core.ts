@@ -10,11 +10,11 @@ import { AsyncLocalStorage } from 'node:async_hooks';
 
 export type OwnerGuard = preHandlerHookHandler;
 export interface AuditInput { principal?: string; action: string; resource?: string; outcome?: string; detail?: string; latency_ms?: number; }
-export interface ClientRow { id: string; name: string; kind: string; profile_id: string; status: string; expires_at: number | null; last_used: number | null; }
+export interface ClientRow { id: string; name: string; kind: string; profile_id: string; status: string; expires_at: number | null; last_used: number | null; management_scopes: string; }
 export function hashToken(value: string): string { return createHash('sha256').update(value).digest('hex'); }
 export function httpError(statusCode: number, message: string): Error & {statusCode:number} { return Object.assign(new Error(message), { statusCode }); }
 export function equalSecret(a: string, b: string): boolean { return timingSafeEqual(Buffer.from(hashToken(a)), Buffer.from(hashToken(b))); }
-export const SCHEMA_VERSION = 3;
+export const SCHEMA_VERSION = 4;
 
 const schema = `
 CREATE TABLE owner(id INTEGER PRIMARY KEY CHECK(id=1),password_hash TEXT NOT NULL,totp_secret TEXT,mfa_enabled INTEGER NOT NULL DEFAULT 0,last_totp_step INTEGER,created_at INTEGER NOT NULL);
@@ -75,6 +75,9 @@ const migrations: Migration[] = [
   }},
   { version: 3, up: db => {
     db.exec(`CREATE TABLE management_client(id TEXT PRIMARY KEY,name TEXT NOT NULL,scopes TEXT NOT NULL,token_hash TEXT NOT NULL UNIQUE,status TEXT NOT NULL DEFAULT 'active',expires_at INTEGER NOT NULL,created_at INTEGER NOT NULL,last_used INTEGER);`);
+  }},
+  { version: 4, up: db => {
+    db.exec("ALTER TABLE client ADD COLUMN management_scopes TEXT NOT NULL DEFAULT '[]'");
   }},
 ];
 
@@ -186,11 +189,11 @@ export class Hub {
 
   withAuditPrincipal<T>(principal:string,work:()=>T):T { return this.auditPrincipal.run(principal,work); }
 
-  requireClient(request: FastifyRequest): ClientRow {
-    if (this.setting('emergency_stop') === 'true') throw httpError(503, 'Emergency stop is active');
+  requireClient(request: FastifyRequest, options: {allowEmergencyStop?: boolean} = {}): ClientRow {
+    if (!options.allowEmergencyStop && this.setting('emergency_stop') === 'true') throw httpError(503, 'Emergency stop is active');
     const bearer = request.headers.authorization;
     if (!bearer?.startsWith('Bearer ') || bearer.length > 512) throw httpError(401, 'Client bearer token required');
-    const row = this.db.prepare('SELECT id,name,kind,profile_id,status,expires_at,last_used FROM client WHERE token_hash=?').get(hashToken(bearer.slice(7))) as ClientRow | undefined;
+    const row = this.db.prepare('SELECT id,name,kind,profile_id,status,expires_at,last_used,management_scopes FROM client WHERE token_hash=?').get(hashToken(bearer.slice(7))) as ClientRow | undefined;
     if (!row || row.status !== 'active' || (row.expires_at !== null && row.expires_at <= Date.now())) throw httpError(401, 'Client credential is invalid or expired');
     this.db.prepare('UPDATE client SET last_used=? WHERE id=?').run(Date.now(),row.id);
     return row;

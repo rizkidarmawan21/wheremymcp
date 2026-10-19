@@ -14,7 +14,7 @@ const pages = {
   connections: ['Connections', 'Keep account identities and credentials distinct. Tool grants stay bound to stable connection IDs.'],
   profiles: ['Profiles & grants', 'A profile decides which tools an agent client can use. Allow only the tools it needs; everything else stays blocked.'],
   clients: ['Agent clients', 'Issue a separate profile-bound token for each client. Tokens appear only once.'],
-  management: ['Management MCP', 'Manage WhereMyMCP from your agent through its built-in MCP endpoint. Separate tokens control read, write and delete access.'],
+  management: ['Management MCP', 'Use the same client token and MCP connection for provider tools and optional gateway administration.'],
   approvals: ['One-use approvals', 'Authorize one exact write or delete call. The client, tool and argument object must match.'],
   skills: ['Reviewed skills', 'Import files for inspection. Approval does not execute content or install hooks.'],
   security: ['Security', 'Manage owner MFA and the gateway emergency stop.'],
@@ -182,6 +182,33 @@ function form(fields, submitLabel, onSubmit) {
   return node;
 }
 function closeDialog() { if (dialog.open) dialog.close(); dialog.replaceChildren(); dialog.classList.remove('grants-dialog'); }
+function ownerVerificationFields() {
+  return [{name: 'password', label: 'Owner password', type: 'password', required: true, autocomplete: 'current-password'}, {name: 'totp', label: 'Authenticator code', required: mfaEnabled, inputmode: 'numeric', autocomplete: 'one-time-code', hint: 'Required when MFA is enabled.'}];
+}
+function clientAccessForm(fields, submitLabel, onSubmit, scopes = []) {
+  const current = scopes.join(','), options = [{value: '', label: 'Off: provider tools only'}, {value: 'read', label: 'Read: inspect configuration'}, {value: 'read,write', label: 'Read + Write: configure servers and access'}, {value: 'read,write,delete', label: 'Read + Write + Delete: full management'}];
+  if (!options.some(option => option.value === current)) options.push({value: current, label: `Custom: ${scopes.join(', ')}`});
+  const node = form([...fields, {name: 'management_access', label: 'Manage WhereMyMCP', type: 'select', value: current, options, hint: 'Optional. Uses this same token, endpoint and expiry. Only the owner can grant management access.'}, ...ownerVerificationFields()], submitLabel, async data => {
+    const {management_access, password, totp, ...values} = data;
+    const management_scopes = management_access ? management_access.split(',') : [];
+    await onSubmit({...values, management_scopes, ...(management_scopes.length ? {password, ...(totp ? {totp} : {})} : {})});
+  });
+  const selection = node.elements.namedItem('management_access');
+  const updateVerification = () => {
+    for (const name of ['password', 'totp']) {
+      const input = node.elements.namedItem(name);
+      input.closest('.field').hidden = !selection.value;
+      input.required = !!selection.value && (name === 'password' || mfaEnabled);
+    }
+  };
+  selection.addEventListener('change', updateVerification); updateVerification();
+  return node;
+}
+function editClientManagement(row) {
+  modal('Edit management access', p('Provider access stays controlled by this client’s profile. Removing management access does not rotate its token. Reload your MCP client to refresh the tool list.'), clientAccessForm([], 'Save management access', async data => {
+    await api(idPath('clients', row.id, '/management'), 'PUT', data); closeDialog(); await route(); notify('Management access updated.');
+  }, row.management_scopes || []));
+}
 function modal(title, ...children) {
   closeDialog();
   dialog.append(el('div', {class: 'dialog-head'}, el('h2', {id: 'dialog-title'}, title), action('Close', closeDialog, '', 'close')), el('div', {class: 'dialog-body'}, ...children.flat(Infinity).filter(child => child !== null && child !== undefined)));
@@ -358,7 +385,7 @@ function registryInventory(counts) {
   return section('Registry inventory', el('div', {class: 'registry-list'}, entries.map(([countKey, page, label, description]) => el('a', {href: `#${page}`, class: 'registry-link'}, el('div', {}, el('span', {class: 'registry-label'}, label), el('span', {class: 'registry-description'}, description)), el('span', {class: 'registry-count'}, Number(counts[countKey] || 0))))));
 }
 async function stopControl(enabled) {
-  await confirmAction(enabled ? 'Stop gateway calls' : 'Resume gateway calls', enabled ? 'Deny all agent tool calls immediately. Owner access stays available so you can inspect and repair policy.' : 'Allow agent calls again under the current grants, approvals and connection policy.', () => api('/api/v1/emergency-stop', 'POST', {enabled}), enabled ? 'Stop all calls' : 'Resume calls');
+  await confirmAction(enabled ? 'Stop gateway calls' : 'Resume gateway calls', enabled ? 'Stop provider tool calls immediately. Management and owner access stay available so you can inspect and repair policy.' : 'Allow provider calls again under the current grants, approvals and connection policy.', () => api('/api/v1/emergency-stop', 'POST', {enabled}), enabled ? 'Stop all calls' : 'Resume calls');
 }
 async function autoApproveServers(servers) {
   if (!servers.length) { notify('Select at least one MCP server.'); return; }
@@ -602,13 +629,14 @@ const renderers = {
     const profileRows = listOf(profiles, 'profiles');
     heading(target, 'clients', action('Issue client token', () => {
       if (!profileRows.length) { notify('Create a profile before issuing a client token.'); return; }
-      modal('Issue client token', form([{name: 'name', label: 'Client name', required: true, placeholder: 'e.g. codex-laptop'}, {name: 'kind', label: 'Client application', type: 'select', options: ['codex', 'claude', 'cursor', 'gemini', 'hermes', 'other']}, {name: 'profile_id', label: 'Bound profile', type: 'select', required: true, options: profileRows.map(item => ({value: item.id, label: item.name}))}, {name: 'ttl_days', label: 'Expires after days (optional)', type: 'number', min: 1, max: 3650, placeholder: 'e.g. 30'}], 'Issue token', async data => {
-        const created = await api('/api/v1/clients', 'POST', data); revealToken('Save client token', created.token, 'Shown once. Anyone holding this token can use this profile.', route);
+      modal('Issue client token', clientAccessForm([{name: 'name', label: 'Client name', required: true, placeholder: 'e.g. codex-laptop'}, {name: 'kind', label: 'Client application', type: 'select', options: ['codex', 'claude', 'cursor', 'gemini', 'hermes', 'other']}, {name: 'profile_id', label: 'Bound profile', type: 'select', required: true, options: profileRows.map(item => ({value: item.id, label: item.name}))}, {name: 'ttl_days', label: 'Expires after days (optional)', type: 'number', min: 1, max: 3650, placeholder: 'e.g. 30'}], 'Issue token', async data => {
+        const created = await api('/api/v1/clients', 'POST', data); revealToken('Save client token', created.token, 'Shown once. This one token carries the profile’s tool access and any selected management permissions. Use WHEREMYMCP_TOKEN in your client configuration.', route);
       }));
     }, 'primary'));
     const rows = listOf(result, 'clients');
     if (!rows.length) target.append(empty('No agent clients. Issue a separate token for each application after reviewing its profile grants.'));
-    for (const row of rows) target.append(summaryRow(row.name, row.status, [`Profile: ${profileRows.find(item => item.id === row.profile_id)?.name || row.profile_id}`, `App: ${row.kind}`, `Last used: ${time(row.last_used)}`, `Expires: ${row.expires_at ? time(row.expires_at) : 'No expiry'}`],
+    for (const row of rows) target.append(summaryRow(row.name, row.status, [`Profile: ${profileRows.find(item => item.id === row.profile_id)?.name || row.profile_id}`, `Management: ${row.management_scopes?.length ? row.management_scopes.join(', ') : 'Off'}`, `App: ${row.kind}`, `Last used: ${time(row.last_used)}`, `Expires: ${row.expires_at ? time(row.expires_at) : 'No expiry'}`],
+      action('Edit management access', () => editClientManagement(row)),
       action('Client config', () => {
         modal('Generate client config', form([{name: 'kind', label: 'Config format', type: 'select', value: row.kind, options: ['codex', 'claude', 'cursor', 'gemini', 'hermes', 'other']}], 'Generate config', async data => {
           const config = await api(`${idPath('clients', row.id, '/config')}?kind=${encodeURIComponent(data.kind)}`);
@@ -616,24 +644,25 @@ const renderers = {
           modal('Client configuration', p(typeof config.instructions === 'string' ? config.instructions : JSON.stringify(config.instructions)), p('Set the token through the referenced environment variable. Compatibility depends on the installed client version and remote HTTP transport support.', 'hint'), code(snippet), action('Copy config', () => copy(snippet), '', 'copy'));
         }));
       }, '', 'file'),
-      action('Rotate token', () => confirmAction('Rotate client token', 'The existing token stops working immediately. Save the replacement and update your client environment.', async () => {
+      action('Rotate token', () => row.management_scopes?.length ? modal('Rotate client token', p('This token includes management access. Owner verification is required to reveal its replacement.'), form(ownerVerificationFields(), 'Rotate token', async data => {
+        const rotated = await api(idPath('clients', row.id, '/rotate'), 'POST', data);
+        revealToken('Save replacement token', rotated.token, 'Shown once. The old token stops working for both provider tools and management.', route);
+      })) : confirmAction('Rotate client token', 'The existing token stops working immediately. Save the replacement and update your client environment.', async () => {
         const rotated = await api(idPath('clients', row.id, '/rotate'), 'POST');
         revealToken('Save replacement token', rotated.token, 'Shown once. The old client token has been invalidated.', route);
       }, 'Rotate token', false), '', 'refresh'),
       action('Revoke', () => confirmAction('Revoke client', 'This client loses gateway access immediately.', () => api(idPath('clients', row.id, '/revoke'), 'POST'), 'Revoke client'), 'danger', 'ban')));
   },
   async management(target) {
-    const result = await api('/api/v1/management/clients');
-    const verificationFields = [{name: 'password', label: 'Owner password', type: 'password', required: true, autocomplete: 'current-password'}, {name: 'totp', label: 'Authenticator code', required: mfaEnabled, inputmode: 'numeric', autocomplete: 'one-time-code', hint: 'Required when MFA is enabled.'}];
+    const [result, clientResult] = await Promise.all([api('/api/v1/management/clients'), api('/api/v1/clients')]);
+    const verificationFields = ownerVerificationFields();
     const revealManagement = data => modal('Save management token', p('Shown once. This credential controls gateway configuration according to its scopes. Store it separately from agent tokens.'), code(data.token), actions(action('Copy management token', () => copy(data.token))), p('Set WHEREMYMCP_MANAGEMENT_TOKEN in the environment used to launch Codex, then add this configuration. Reload your MCP client after saving.', 'hint'), code(data.config), actions(action('Copy management config', () => copy(data.config)), action('I saved it', async () => { closeDialog(); await route(); }, 'primary')));
-    heading(target, 'management', action('Issue management token', () => modal('Issue management token', p('Read inspects configuration. Write can change servers, replace profile access and issue agent tokens. Delete can remove servers/profiles and revoke agent clients. Provider consent and owner security remain in the dashboard.'), form([{name: 'name', label: 'Management client name', required: true, placeholder: 'e.g. codex-manager'}, {name: 'read', label: 'Read configuration and diagnostics', type: 'checkbox', value: true}, {name: 'write', label: 'Write configuration and issue agent tokens', type: 'checkbox'}, {name: 'delete', label: 'Delete servers/profiles and revoke clients', type: 'checkbox'}, {name: 'ttl_days', label: 'Expires after days', type: 'number', value: 30, min: 1, max: 365, required: true}, ...verificationFields], 'Issue management token', async data => {
-      const scopes = ['read', 'write', 'delete'].filter(scope => data[scope]);
-      if (!scopes.length) throw new Error('Choose at least one management scope.');
-      const created = await api('/api/v1/management/clients', 'POST', {name: data.name, scopes, ttl_days: data.ttl_days, password: data.password, ...(data.totp ? {totp: data.totp} : {})});
-      revealManagement(created);
-    })), 'primary'));
-    target.append(section('Built-in management endpoint', p('Available on every instance. No MCP server registration or profile grant is required for this endpoint.'), code(result.endpoint), p(`${result.tools_count} management tools. Each token sees only tools allowed by its scopes. Ordinary agent tokens cannot use this endpoint.`, 'hint'), details('Codex configuration', code(result.config)), p('Example: “Register this MCP server, approve its current tools, then give Default access to that server.”', 'hint')));
-    if (!result.clients.length) target.append(empty('No management clients yet. Issue a dedicated token to let an agent manage this instance.'));
+    heading(target, 'management', action('Manage client tokens', () => { location.hash = 'clients'; }, 'primary'));
+    target.append(section('One connection for tools and management', p('Keep your existing MCP URL and client token. In Agent clients, choose Edit management access for the client you want to authorize. New clients start with management off.'), code(result.unified_endpoint), p(`${result.tools_count} built-in management tools. Read inspects configuration; Write changes servers and access; Delete removes servers/profiles and revokes clients. The client profile still controls provider tools.`, 'hint'), p('Generate configuration in Agent clients for Codex, Claude, Cursor, Gemini, Hermes or another MCP client. The same token and /mcp endpoint serve both kinds of tools.'), p('Example: “Register this MCP server, approve its current tools, then give Default access to that server.”', 'hint')));
+    const managedClients = listOf(clientResult, 'clients').filter(row => row.management_scopes?.length);
+    if (!managedClients.length) target.append(empty('No client has management access yet. Enable it on an existing client or choose it while issuing a client token. No second MCP connection is needed.'));
+    for (const row of managedClients) target.append(summaryRow(row.name, row.status, [`Management: ${row.management_scopes.join(', ')}`, `Expires: ${row.expires_at ? time(row.expires_at) : 'No expiry'}`, `Last used: ${time(row.last_used)}`], action('Edit management access', () => editClientManagement(row))));
+    if (result.clients.length) target.append(section('Legacy separate management clients', p('These earlier tokens still use /mcp/manage. To use one connection, enable management on an Agent client, verify its access, then revoke the legacy token.')));
     for (const row of result.clients) target.append(summaryRow(row.name, row.status, [`Scopes: ${row.scopes.join(', ')}`, `Expires: ${time(row.expires_at)}`, `Last used: ${time(row.last_used)}`], row.status === 'active' && row.expires_at > Date.now() ? action('Rotate management token', () => modal('Rotate management token', p('The old management token stops working immediately.'), form(verificationFields, 'Rotate management token', async data => revealManagement(await api(idPath('management/clients', row.id, '/rotate'), 'POST', data))))) : null, row.status === 'active' ? action('Revoke management token', () => confirmAction('Revoke management token', 'This management client loses access immediately.', () => api(idPath('management/clients', row.id, '/revoke'), 'POST'), 'Revoke management token'), 'danger') : null));
   },
   async approvals(target) {
@@ -687,7 +716,7 @@ const renderers = {
         reveal('Save replacement recovery codes', result.recovery_codes.join('\n'), 'Shown once. Previous recovery codes are invalid. Store each replacement offline; each can be consumed once.');
       })))
     )),
-    section('Emergency stop', p(overview.emergency_stop ? 'All gateway tool calls are stopped.' : 'Gateway policy is active. Emergency stop denies all agent tool calls.'), action(overview.emergency_stop ? 'Resume gateway calls' : 'Stop all gateway calls', () => stopControl(!overview.emergency_stop), 'danger')));
+    section('Emergency stop', p(overview.emergency_stop ? 'Provider tool calls are stopped. Management and owner access remain available.' : 'Gateway policy is active. Emergency stop blocks provider calls; management and owner access remain available.'), action(overview.emergency_stop ? 'Resume gateway calls' : 'Stop all gateway calls', () => stopControl(!overview.emergency_stop), 'danger')));
   },
   async audit(target) {
     heading(target, 'audit');

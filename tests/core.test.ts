@@ -45,6 +45,23 @@ test('configuration refuses accidental public bind and insecure public origin', 
   assert.equal(loadConfig({}).host, '127.0.0.1');
 });
 
+test('v3 upgrade preserves existing client credentials and never grants management implicitly',()=>{
+ const dir=mkdtempSync(join(tmpdir(),'hub-v3-upgrade-')),key=randomBytes(32),config=loadConfig({HUB_DATA_DIR:dir}),path=join(dir,'hub.sqlite');
+ let hub:Hub|undefined;
+ try{
+  hub=new Hub(path,key,config);const profile=hub.db.prepare('SELECT id FROM profile').pluck().get();
+  hub.db.prepare('INSERT INTO client(id,name,kind,profile_id,token_hash,created_at) VALUES(?,?,?,?,?,?)').run('existing','Existing','codex',profile,hashToken('existing-token'),0);
+  hub.db.prepare('INSERT INTO management_client(id,name,scopes,token_hash,expires_at,created_at) VALUES(?,?,?,?,?,?)').run('legacy','Legacy','["read"]',hashToken('legacy-token'),9999999999999,0);
+  hub.db.exec('ALTER TABLE client DROP COLUMN management_scopes; DELETE FROM schema_migration WHERE version=4');
+  const before=hub.db.prepare('SELECT * FROM client').get() as any,legacy=hub.db.prepare('SELECT * FROM management_client').get();hub.close();hub=undefined;
+  hub=new Hub(path,key,config);
+  const {management_scopes,...after}=hub.db.prepare('SELECT * FROM client').get() as any;
+  assert.equal(management_scopes,'[]');assert.deepEqual(after,before);assert.deepEqual(hub.db.prepare('SELECT * FROM management_client').get(),legacy);
+  assert.equal(hub.db.prepare('SELECT max(version) FROM schema_migration').pluck().get(),4);
+  const snapshot=readdirSync(dir).find(name=>name.includes('.pre-migration-v4-'));assert.ok(snapshot);assert.equal(statSync(join(dir,snapshot)).mode&0o777,0o600);
+ }finally{hub?.close();rmSync(dir,{recursive:true,force:true});}
+});
+
 test('v1 upgrade snapshots existing data, preserves valid grants and indexes historical audit filters', () => {
   const dir=mkdtempSync(join(tmpdir(),'hub-migration-'));
   const dbPath=join(dir,'hub.sqlite'),key=randomBytes(32),config=loadConfig({HUB_DATA_DIR:dir});
@@ -67,6 +84,7 @@ test('v1 upgrade snapshots existing data, preserves valid grants and indexes his
         CREATE TABLE profile_grant(profile_id TEXT NOT NULL REFERENCES profile(id) ON DELETE CASCADE,tool_id TEXT NOT NULL REFERENCES tool(id) ON DELETE CASCADE,connection_id TEXT,action_class TEXT NOT NULL CHECK(action_class IN ('read','write','delete')),PRIMARY KEY(profile_id,tool_id));
         DELETE FROM schema_migration WHERE version>=2;
         DROP TABLE management_client;
+        ALTER TABLE client DROP COLUMN management_scopes;
       `);
       legacy.prepare('INSERT INTO profile_grant VALUES(?,?,?,?)').run(profile,'valid','account','read');
       legacy.prepare('INSERT INTO profile_grant VALUES(?,?,?,?)').run(profile,'orphan','missing-account','read');

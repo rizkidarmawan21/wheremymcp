@@ -55,6 +55,7 @@ function validateDatabase(path:string) {
     for(const [table,columns] of Object.entries(required))db.prepare(`SELECT ${columns} FROM ${table} LIMIT 0`).all();
     if(version>=2)db.prepare('SELECT profile_id,account_id,account_alias FROM audit_event LIMIT 0').all();
     if(version>=3)db.prepare('SELECT id,name,scopes,token_hash,status,expires_at,created_at,last_used FROM management_client LIMIT 0').all();
+    if(version>=4)db.prepare('SELECT management_scopes FROM client LIMIT 0').all();
     if((db.pragma('foreign_key_check') as unknown[]).length)throw new Error('Backup foreign-key integrity check failed');
     return db;
   }catch(e){db.close();throw e;}

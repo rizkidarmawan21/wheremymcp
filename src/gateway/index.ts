@@ -8,6 +8,7 @@ import safeRegex from 'safe-regex2';
 import {z} from 'zod';
 import type {Hub} from '../core.js';
 import {safeFetch,validateTarget} from './network.js';
+import {listManagementTools,callManagementTool,isManagementTool} from '../management.js';
 export {safeFetch,validateTarget} from './network.js';
 
 type Upstream={id:string;name:string;url:string;connection_id:string|null;status:string;allowed_private_ips:string;timeout_ms:number;created_at:number};
@@ -208,14 +209,15 @@ export async function registerGateway(app:FastifyInstance,hub:Hub,requireOwner:p
   }catch(error){calledUpstream??=(error as {upstream_id?:string})?.upstream_id;if(calledUpstream){const count=(failures.get(calledUpstream)??0)+1;failures.set(calledUpstream,count);if(count>=3||(resource!=='unknown'&&getTool(resource).risk!=='read')){hub.db.prepare("UPDATE upstream SET status='error' WHERE id=? AND status='active'").run(calledUpstream);audit('upstream.circuit_open',calledUpstream,'quarantined','repeated_or_uncertain_failure');}}audit('tool.call',resource,calledUpstream?'failure':'denied',calledUpstream?'upstream_outcome_unknown':'policy_or_upstream_failure',principal,Date.now()-start);return protocolFail();}finally{if(timer)clearInterval(timer);release?.();}
  }
  app.route({method:['GET','POST','DELETE'],url:'/mcp',handler:async(req,reply)=>{
-  hub.requireClient(req);if(req.headers.origin&&req.headers.origin!==hub.config.origin)fail('invalid_origin',403);
+  const gatewayClient=()=>{const client=hub.requireClient(req,{allowEmergencyStop:true});if(stopped()&&!JSON.parse(client.management_scopes??'[]').length)hub.requireClient(req);return client;};
+  gatewayClient();if(req.headers.origin&&req.headers.origin!==hub.config.origin)fail('invalid_origin',403);
   if(req.method!=='POST')return reply.code(405).send({error:'method_not_allowed'});
   bounded(req.body,hub.config.maxBodyBytes);
   const disconnect=new AbortController();const abort=()=>{if(!reply.raw.writableEnded)disconnect.abort();};reply.raw.once('close',abort);
   const handler=createMcpHandler(()=>{
    const server=new Server({name:'wheremymcp',version:'0.1.0'},{capabilities:{tools:{}},cacheHints:{'tools/list':{ttlMs:0,cacheScope:'private'}}});
    server.setRequestHandler('tools/list',request=>{
-    const client=hub.requireClient(req),now=Date.now();
+    const client=gatewayClient(),now=Date.now();
     const candidates=hub.db.prepare(`SELECT t.* FROM client cl JOIN profile p ON p.id=cl.profile_id
       JOIN profile_grant g ON g.profile_id=p.id JOIN tool t ON t.id=g.tool_id JOIN upstream u ON u.id=t.upstream_id
       LEFT JOIN connection c ON c.id=u.connection_id
@@ -225,10 +227,11 @@ export async function registerGateway(app:FastifyInstance,hub:Hub,requireOwner:p
       AND (u.connection_id IS NULL OR (c.status IN ('active','connected') AND (c.expires_at IS NULL OR c.expires_at>?)))
       ORDER BY t.gateway_name`).all(client.id,now,now) as ToolRow[];
     const refreshRequired=new Map<string,boolean>();
-    const tools=stopped()?[]:candidates.filter(tool=>{if(!refreshRequired.has(tool.upstream_id))refreshRequired.set(tool.upstream_id,hub.setting('import_requires_refresh:'+tool.upstream_id)==='true');return !refreshRequired.get(tool.upstream_id);});
-    const cursor=request.params?.cursor;const offset=cursor?Number(cursor):0;if(!Number.isSafeInteger(offset)||offset<0||offset>tools.length)throw new ProtocolError(-32602,'Invalid cursor');const page=tools.slice(offset,offset+64);return {tools:page.map(toolDefinition),...(offset+64<tools.length?{nextCursor:String(offset+64)}:{})};
+    const providerTools=stopped()?[]:candidates.filter(tool=>{if(!refreshRequired.has(tool.upstream_id))refreshRequired.set(tool.upstream_id,hub.setting('import_requires_refresh:'+tool.upstream_id)==='true');return !refreshRequired.get(tool.upstream_id);});
+    const tools=[...(JSON.parse(client.management_scopes??'[]').length?listManagementTools(hub,req,'client'):[]),...providerTools.map(toolDefinition)];
+    const cursor=request.params?.cursor;const offset=cursor?Number(cursor):0;if(!Number.isSafeInteger(offset)||offset<0||offset>tools.length)throw new ProtocolError(-32602,'Invalid cursor');const page=tools.slice(offset,offset+64);return {tools:page,...(offset+64<tools.length?{nextCursor:String(offset+64)}:{})};
    });
-   server.setRequestHandler('tools/call',(request,ctx)=>invoke(req,request.params.name,request.params.arguments??{},ctx.mcpReq._meta?.wheremymcp_approval_id??ctx.mcpReq._meta?.unifymcp_approval_id,AbortSignal.any([ctx.mcpReq.signal,disconnect.signal])));
+   server.setRequestHandler('tools/call',(request,ctx)=>isManagementTool(hub,request.params.name)?callManagementTool(app,hub,req,request.params.name,request.params.arguments,'client'):invoke(req,request.params.name,request.params.arguments??{},ctx.mcpReq._meta?.wheremymcp_approval_id??ctx.mcpReq._meta?.unifymcp_approval_id,AbortSignal.any([ctx.mcpReq.signal,disconnect.signal])));
    return server;
   },{legacy:'stateless',maxRequestBodySize:hub.config.maxBodyBytes,maxSubscriptions:0,onerror:()=>{}});
   try{

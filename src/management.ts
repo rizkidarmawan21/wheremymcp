@@ -1,32 +1,41 @@
 import {randomBytes,randomUUID} from 'node:crypto';
 import type {FastifyInstance,FastifyRequest,HTTPMethods} from 'fastify';
-import {Server,createMcpHandler} from '@modelcontextprotocol/server';
+import {Server,createMcpHandler,type Tool,type CallToolResult} from '@modelcontextprotocol/server';
 import {z} from 'zod';
 import {Hub,hashToken,httpError,type OwnerGuard} from './core.js';
 
 type Scope='read'|'write'|'delete';
-type Manager={id:string;name:string;scopes:string;token_hash:string;status:string;expires_at:number};
-type Dispatch={id:string;hash:string;scope:Scope;method:HTTPMethods;url:string};
+type CredentialSource='client'|'legacy';
+type Manager={id:string;name:string;scopes:string;token_hash:string;status:string;expires_at:number|null;source:CredentialSource};
+type Dispatch={id:string;hash:string;scope:Scope;method:HTTPMethods;url:string;source:CredentialSource};
 // Owner REST accepts delegation only through an exact one-use in-process ticket, never a management bearer header.
 const dispatchTickets=new Map<string,Dispatch>();
 const dispatchRequests=new WeakMap<FastifyRequest,Dispatch>();
 const id=z.string().uuid(),scope=z.enum(['read','write','delete']);
+export const managementScopes=z.array(scope).max(3).refine(v=>new Set(v).size===v.length);
+export const managementToolPrefix='wheremymcp_manage_';
 const tokenInput=z.object({name:z.string().trim().min(1).max(100),scopes:z.array(scope).min(1).max(3).refine(v=>new Set(v).size===v.length),ttl_days:z.number().int().min(1).max(365).default(30),password:z.string().max(1024),totp:z.string().max(10).optional()}).strict();
 const reauth=z.object({password:z.string().max(1024),totp:z.string().max(10).optional()}).strict();
 const page={offset:z.number().int().min(0).max(100000).default(0),limit:z.number().int().min(1).max(100).default(25)};
 const publicColumns='id,name,scopes,status,expires_at,created_at,last_used';
 const publicManager=(row:any)=>({...row,status:row.status==='active'&&row.expires_at<=Date.now()?'expired':row.status,scopes:JSON.parse(row.scopes)});
-function requireManager(hub:Hub,request:FastifyRequest):Manager{
+function requireManager(hub:Hub,request:FastifyRequest,source:CredentialSource='legacy'):Manager{
  const header=request.headers.authorization;
- if(!header?.startsWith('Bearer wmm_')||header.length>512)throw httpError(401,'Management bearer token required');
- const row=hub.db.prepare('SELECT * FROM management_client WHERE token_hash=?').get(hashToken(header.slice(7))) as Manager|undefined;
- if(!row||row.status!=='active'||row.expires_at<=Date.now())throw httpError(401,'Management token is invalid or expired');
- hub.db.prepare('UPDATE management_client SET last_used=? WHERE id=?').run(Date.now(),row.id);return row;
+ if(!header?.startsWith(source==='legacy'?'Bearer wmm_':'Bearer umcp_')||header.length>512)throw httpError(401,'Management bearer token required');
+ const row=hub.db.prepare(source==='legacy'?'SELECT * FROM management_client WHERE token_hash=?':'SELECT id,name,management_scopes AS scopes,token_hash,status,expires_at FROM client WHERE token_hash=?').get(hashToken(header.slice(7))) as Manager|undefined;
+ if(!row||row.status!=='active'||(row.expires_at!==null&&row.expires_at<=Date.now()))throw httpError(401,'Management token is invalid or expired');
+ hub.db.prepare(source==='legacy'?'UPDATE management_client SET last_used=? WHERE id=?':'UPDATE client SET last_used=? WHERE id=?').run(Date.now(),row.id);return {...row,source};
 }
 function authorize(hub:Hub,context:Dispatch):void{
- const row=hub.db.prepare('SELECT * FROM management_client WHERE id=?').get(context.id) as Manager|undefined;
- if(!row||row.token_hash!==context.hash||row.status!=='active'||row.expires_at<=Date.now())throw httpError(401,'Management token is invalid or expired');
+ const row=hub.db.prepare(context.source==='legacy'?'SELECT * FROM management_client WHERE id=?':'SELECT token_hash,status,expires_at,management_scopes AS scopes FROM client WHERE id=?').get(context.id) as Manager|undefined;
+ if(!row||row.token_hash!==context.hash||row.status!=='active'||(row.expires_at!==null&&row.expires_at<=Date.now()))throw httpError(401,'Management token is invalid or expired');
  if(!JSON.parse(row.scopes).includes(context.scope))throw httpError(403,'Management scope required: '+context.scope);
+}
+export async function verifyOwnerStepUp(hub:Hub,request:FastifyRequest,body:{password?:string;totp?:string}):Promise<void>{
+ if(!request.ownerSession)throw httpError(403,'Owner session required for management credentials');
+ if(!await hub.verifyStepUp(body.password??'',body.totp))throw httpError(403,'Owner password and MFA verification required');
+ const session=hub.db.prepare('SELECT expires_at,last_used FROM session WHERE id=?').get(request.ownerSession.id) as {expires_at:number;last_used:number}|undefined;
+ if(!session||session.expires_at<=Date.now()||session.last_used<Date.now()-hub.config.sessionIdleMs)throw httpError(403,'Owner session required');
 }
 export function isManagementDispatch(hub:Hub,request:FastifyRequest):boolean{
  const ticket=request.headers['x-wheremymcp-dispatch'];
@@ -87,16 +96,48 @@ const operations:Operation[]=[
  {name:'audit_list',scope:'read',description:'Read bounded audit events without tool arguments, results or secrets.',schema:z.object({limit:z.number().int().min(1).max(100).default(25),cursor:z.string().max(256).optional(),principal:z.string().max(160).optional()}).strict(),method:'GET',url:input=>'/api/v1/audit?'+new URLSearchParams(Object.fromEntries(Object.entries(input).map(([k,v])=>[k,String(v)]))).toString()},
 ];
 
+function namedOperations(hub:Hub,source:CredentialSource):Map<string,Operation>{
+ if(source==='legacy')return new Map(operations.map(operation=>[operation.name,operation]));
+ // Imported provider names predate this namespace; preserve them and alias the built-in tool instead.
+ const occupied=new Set((hub.db.prepare("SELECT gateway_name FROM tool WHERE gateway_name GLOB 'wheremymcp_manage_*'").all() as {gateway_name:string}[]).map(row=>row.gateway_name));
+ return new Map(operations.map(operation=>{const base=managementToolPrefix+operation.name;let name=base,index=0;while(occupied.has(name))name=base+'_builtin_'+(++index);occupied.add(name);return [name,operation];}));
+}
+export function isManagementTool(hub:Hub,name:string):boolean{return name.startsWith(managementToolPrefix)&&namedOperations(hub,'client').has(name);}
+export function listManagementTools(hub:Hub,req:FastifyRequest,source:CredentialSource='legacy'):Tool[]{
+ const manager=requireManager(hub,req,source);
+ return [...namedOperations(hub,source)].filter(([,operation])=>JSON.parse(manager.scopes).includes(operation.scope)).map(([name,operation])=>({name,description:operation.description,inputSchema:z.toJSONSchema(operation.schema,{unrepresentable:'any'}) as any,annotations:{readOnlyHint:operation.scope==='read',destructiveHint:operation.scope!=='read'}}));
+}
+
+export async function callManagementTool(app:FastifyInstance,hub:Hub,req:FastifyRequest,name:string,args:unknown,source:CredentialSource='legacy'):Promise<CallToolResult>{
+ const manager=requireManager(hub,req,source),operation=namedOperations(hub,source).get(name);
+ if(!operation||!JSON.parse(manager.scopes).includes(operation.scope)){hub.audit({principal:'management:'+manager.id,action:'management.tool.call',resource:operation?.name??'unknown',outcome:'deny',detail:'scope_or_tool_denied'});return {isError:true,content:[{type:'text',text:'Unknown tool or management scope denied'}]};}
+ try{
+  const input=operation.schema.parse(args??{}),url=operation.url(input),body=operation.body?.(input,hub);
+  const ticket=randomBytes(32).toString('base64url');
+  dispatchTickets.set(ticket,{id:manager.id,hash:manager.token_hash,scope:operation.scope,method:operation.method,url,source});
+  let result;
+  try{result=await app.inject({method:operation.method,url,headers:{host:new URL(hub.config.origin).host,'x-wheremymcp-dispatch':ticket},...(body===undefined?{}:{payload:body as Record<string,unknown>})});}finally{dispatchTickets.delete(ticket);}
+  const payload=result.json();
+  if(result.statusCode>=300){hub.audit({principal:'management:'+manager.id,action:'management.tool.call',resource:operation.name,outcome:'deny',detail:'http_'+result.statusCode});return {isError:true,content:[{type:'text',text:JSON.stringify({error:payload.error,message:payload.message,request_id:payload.request_id})}]};}
+  const value=JSON.stringify(operation.result?operation.result(payload,input):operation.name==='profile_set_access'?{...payload,selected_tools:(body as {grants:unknown[]}).grants.length}:payload);
+  if(Buffer.byteLength(value)>1048576){hub.audit({principal:'management:'+manager.id,action:'management.tool.call',resource:operation.name,outcome:'deny',detail:'result_too_large'});return {isError:true,content:[{type:'text',text:'Result too large. Use a smaller page or omit full metadata.'}]};}
+  hub.audit({principal:'management:'+manager.id,action:'management.tool.call',resource:operation.name});return {content:[{type:'text',text:value}]};
+ }catch(error){hub.audit({principal:'management:'+manager.id,action:'management.tool.call',resource:operation.name,outcome:'deny',detail:'invalid_or_denied'});return {isError:true,content:[{type:'text',text:error instanceof z.ZodError?'Invalid tool arguments. Check the tool schema and required confirmations.':(error as {statusCode?:number}).statusCode&&((error as {statusCode:number}).statusCode<500)?(error as Error).message:'Management operation failed'}]};}
+}
+
 export async function registerManagement(app:FastifyInstance,hub:Hub,owner:OwnerGuard):Promise<void>{
  const ownerRoute={preHandler:owner},stepUpRoute={preHandler:owner,config:{rateLimit:{max:8,timeWindow:'1 minute'}}};
  const endpoint=hub.config.origin+'/mcp/manage';
  const configSnippet=`[mcp_servers.wheremymcp_management]\nurl = ${JSON.stringify(endpoint)}\nbearer_token_env_var = "WHEREMYMCP_MANAGEMENT_TOKEN"`;
- async function stepUp(request:FastifyRequest,body:{password:string;totp?:string}){
-  if(!await hub.verifyStepUp(body.password,body.totp))throw httpError(403,'Owner password and MFA verification required');
-  const session=hub.db.prepare('SELECT expires_at,last_used FROM session WHERE id=?').get(request.ownerSession?.id??'') as {expires_at:number;last_used:number}|undefined;
-  if(!session||session.expires_at<=Date.now()||session.last_used<Date.now()-hub.config.sessionIdleMs)throw httpError(403,'Owner session required');
- }
- app.get('/api/v1/management/clients',ownerRoute,async()=>({endpoint,config:configSnippet,tools_count:operations.length,clients:hub.db.prepare(`SELECT ${publicColumns} FROM management_client ORDER BY created_at`).all().map(publicManager)}));
+ const stepUp=(request:FastifyRequest,body:{password?:string;totp?:string})=>verifyOwnerStepUp(hub,request,body);
+ app.get('/api/v1/management/clients',ownerRoute,async()=>({endpoint,config:configSnippet,unified_endpoint:hub.config.origin+'/mcp',tools_count:operations.length,clients:hub.db.prepare(`SELECT ${publicColumns} FROM management_client ORDER BY created_at`).all().map(publicManager)}));
+ app.put('/api/v1/clients/:id/management',stepUpRoute,async request=>{
+  const target=id.parse((request.params as any).id),body=z.object({management_scopes:managementScopes,password:z.string().max(1024).optional(),totp:z.string().max(10).optional()}).strict().parse(request.body);
+  if(!hub.db.prepare('SELECT id FROM client WHERE id=?').get(target))throw httpError(404,'Client not found');
+  if(body.management_scopes.length)await stepUp(request,body);
+  hub.db.prepare('UPDATE client SET management_scopes=? WHERE id=?').run(JSON.stringify(body.management_scopes),target);
+  hub.audit({principal:'owner',action:'client.management.update',resource:target});return {ok:true,management_scopes:body.management_scopes};
+ });
  app.post('/api/v1/management/clients',stepUpRoute,async(request,reply)=>{
   const body=tokenInput.parse(request.body);await stepUp(request,body);
   const id=randomUUID(),token='wmm_'+randomBytes(32).toString('base64url');
@@ -119,26 +160,8 @@ export async function registerManagement(app:FastifyInstance,hub:Hub,owner:Owner
  if(req.method!=='POST')return reply.code(405).send({error:'method_not_allowed'});
  const handler=createMcpHandler(()=>{
   const server=new Server({name:'wheremymcp-management',version:'0.1.0'},{capabilities:{tools:{}},cacheHints:{'tools/list':{ttlMs:0,cacheScope:'private'}}});
-  server.setRequestHandler('tools/list',(_request,context)=>{
-   const manager=requireManager(hub,req);
-   return {tools:operations.filter(operation=>JSON.parse(manager.scopes).includes(operation.scope)).map(operation=>({name:operation.name,description:operation.description,inputSchema:z.toJSONSchema(operation.schema,{unrepresentable:'any'}) as any,annotations:{readOnlyHint:operation.scope==='read',destructiveHint:operation.scope!=='read'}}))};
-  });
-  server.setRequestHandler('tools/call',async(request,context)=>{
-   const manager=requireManager(hub,req),operation=operations.find(item=>item.name===request.params.name);
-   if(!operation||!JSON.parse(manager.scopes).includes(operation.scope)){hub.audit({principal:'management:'+manager.id,action:'management.tool.call',resource:operation?.name??'unknown',outcome:'deny',detail:'scope_or_tool_denied'});return {isError:true,content:[{type:'text',text:'Unknown tool or management scope denied'}]};}
-   try{
-    const input=operation.schema.parse(request.params.arguments??{}),url=operation.url(input),body=operation.body?.(input,hub);
-    const ticket=randomBytes(32).toString('base64url');
-    dispatchTickets.set(ticket,{id:manager.id,hash:manager.token_hash,scope:operation.scope,method:operation.method,url});
-    let result;
-    try{result=await app.inject({method:operation.method,url,headers:{host:new URL(hub.config.origin).host,'x-wheremymcp-dispatch':ticket},...(body===undefined?{}:{payload:body as Record<string,unknown>})});}finally{dispatchTickets.delete(ticket);}
-    const payload=result.json();
-    if(result.statusCode>=300){hub.audit({principal:'management:'+manager.id,action:'management.tool.call',resource:operation.name,outcome:'deny',detail:'http_'+result.statusCode});return {isError:true,content:[{type:'text',text:JSON.stringify({error:payload.error,message:payload.message,request_id:payload.request_id})}]};}
-    const value=JSON.stringify(operation.result?operation.result(payload,input):operation.name==='profile_set_access'?{...payload,selected_tools:(body as {grants:unknown[]}).grants.length}:payload);
-    if(Buffer.byteLength(value)>1048576){hub.audit({principal:'management:'+manager.id,action:'management.tool.call',resource:operation.name,outcome:'deny',detail:'result_too_large'});return {isError:true,content:[{type:'text',text:'Result too large. Use a smaller page or omit full metadata.'}]};}
-    hub.audit({principal:'management:'+manager.id,action:'management.tool.call',resource:operation.name});return {content:[{type:'text',text:value}]};
-   }catch(error){hub.audit({principal:'management:'+manager.id,action:'management.tool.call',resource:operation.name,outcome:'deny',detail:'invalid_or_denied'});return {isError:true,content:[{type:'text',text:error instanceof z.ZodError?'Invalid tool arguments. Check the tool schema and required confirmations.':(error as {statusCode?:number}).statusCode&&((error as {statusCode:number}).statusCode<500)?(error as Error).message:'Management operation failed'}]};}
-  });return server;
+  server.setRequestHandler('tools/list',()=>({tools:listManagementTools(hub,req)}));
+  server.setRequestHandler('tools/call',request=>callManagementTool(app,hub,req,request.params.name,request.params.arguments));return server;
  });
  try{
   const headers=new Headers();for(const [key,value] of Object.entries(req.headers))if(value)headers.set(key,Array.isArray(value)?value.join(','):value);
