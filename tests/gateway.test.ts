@@ -168,3 +168,18 @@ test('bulk approval refuses stale discovery when the server configuration change
  assert.equal(f.db.prepare('SELECT count(*) FROM tool WHERE upstream_id=? AND enabled=1').pluck().get(u.id),0);
  assert.equal(f.db.prepare('SELECT status FROM upstream WHERE id=?').pluck().get(u.id),'error');
 });
+
+test('JSON Schema 2020-12 discovery, invocation and write approvals enforce the declared dialect',async t=>{
+ const f=await fixture(t);
+ f.setSchema({$schema:'https://json-schema.org/draft/2020-12/schema',type:'object',$defs:{text:{type:'string',minLength:1}},properties:{text:{$ref:'#/$defs/text'}},required:['text'],unevaluatedProperties:false});
+ const u=await f.add();let tool=(await f.api('GET','/api/v1/tools')).tools[0];
+ await f.api('POST',`/api/v1/tools/${tool.id}/approve`,{risk:'read',enabled:true});
+ f.db.prepare('INSERT INTO profile_grant VALUES(?,?,NULL,?)').run('profile',tool.id,'read');
+ const client=await f.client();await assert.rejects(client.callTool({name:tool.gateway_name,arguments:{text:'ok',extra:true}}));assert.equal(f.getCalls(),0);
+ assert.equal((await client.callTool({name:tool.gateway_name,arguments:{text:'ok'}})).content[0]?.type,'text');
+ f.setAnnotations({});await f.api('POST',`/api/v1/upstreams/${u.id}/auto-approve-tools`,{trust_server:true});
+ tool=(await f.api('GET','/api/v1/tools')).tools[0];f.db.prepare("UPDATE profile_grant SET action_class='write'").run();
+ const invalid=await f.app.inject({method:'POST',url:'/api/v1/approvals',headers:{'x-owner':'yes'},payload:{client_id:'client',tool_id:tool.id,arguments:{text:'ok',extra:true}}});assert.equal(invalid.statusCode,400);
+ const approval=await f.api('POST','/api/v1/approvals',{client_id:'client',tool_id:tool.id,arguments:{text:'ok'}});
+ await client.callTool({name:tool.gateway_name,arguments:{text:'ok'},_meta:{wheremymcp_approval_id:approval.approval_id}});assert.equal(f.getCalls(),2);
+});

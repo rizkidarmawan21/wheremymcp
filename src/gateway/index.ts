@@ -3,6 +3,7 @@ import type {FastifyInstance,FastifyRequest,preHandlerHookHandler} from 'fastify
 import {Server,createMcpHandler,ProtocolError,type Tool,type CallToolResult} from '@modelcontextprotocol/server';
 import {Client,StreamableHTTPClientTransport} from '@modelcontextprotocol/client';
 import {Ajv} from 'ajv';
+import {Ajv2020} from 'ajv/dist/2020.js';
 import safeRegex from 'safe-regex2';
 import type {Hub} from '../core.js';
 import {safeFetch,validateTarget} from './network.js';
@@ -14,6 +15,8 @@ type NativeHub=Hub & {nativeTools?:(connectionId:string)=>Promise<Tool[]>;native
 function cancellable<T>(promise:Promise<T>,signal:AbortSignal):Promise<T>{signal.throwIfAborted();return new Promise((resolve,reject)=>{const abort=()=>reject(new Error('upstream_cancelled'));signal.addEventListener('abort',abort,{once:true});promise.then(resolve,reject).finally(()=>signal.removeEventListener('abort',abort));});}
 type ClientRow={id:string;profile_id:string;status:string;expires_at:number|null};
 const ajv=new Ajv({allErrors:false,strict:false,validateFormats:false,ownProperties:true,addUsedSchema:false});
+const ajv2020=new Ajv2020({allErrors:false,strict:false,validateFormats:false,ownProperties:true,addUsedSchema:false});
+function schemaValidator(schema:Record<string,unknown>){return typeof schema.$schema==='string'&&/^https:\/\/json-schema\.org\/draft\/2020-12\/schema#?$/.test(schema.$schema)?ajv2020:ajv;}
 const maxTools=256;
 function safeSchema(schema:unknown):void {
  let nodes=0;
@@ -93,7 +96,7 @@ export async function registerGateway(app:FastifyInstance,hub:Hub,requireOwner:p
    const validated=tools.map(tool=>{
     bounded(tool);if(!/^[a-zA-Z0-9_.:-]{1,128}$/.test(tool.name)||seen.has(tool.name))fail('invalid_tool');seen.add(tool.name);
     if(tool.description&&tool.description.length>12000)fail('invalid_tool');
-    safeSchema(tool.inputSchema);if(!ajv.validateSchema(tool.inputSchema))fail('invalid_schema');ajv.compile(tool.inputSchema);
+    safeSchema(tool.inputSchema);const validator=schemaValidator(tool.inputSchema);if(!validator.validateSchema(tool.inputSchema))fail('invalid_schema');validator.compile(tool.inputSchema);
     const metadata={description:tool.description??'',input_schema:tool.inputSchema,annotations:tool.annotations??{}};
     return {tool,metadata,fingerprint:argumentHash({...tool,server:version})};
    });
@@ -167,13 +170,13 @@ export async function registerGateway(app:FastifyInstance,hub:Hub,requireOwner:p
  });
  app.get('/api/v1/tools',{preHandler:requireOwner},async()=>({tools:(hub.db.prepare('SELECT tool.*,upstream.connection_id,upstream.name AS upstream_name,upstream.status AS upstream_status FROM tool JOIN upstream ON upstream.id=tool.upstream_id ORDER BY gateway_name').all() as ToolRow[]).map(parseTool)}));
  app.post('/api/v1/tools/:id/approve',{preHandler:requireOwner},async req=>{const tool=getTool(identifier(req));if(hub.setting('import_requires_refresh:'+tool.upstream_id)==='true')fail('live_refresh_required',403);const b=body(req);if(!['read','write','delete'].includes(String(b.risk))||typeof b.enabled!=='boolean')fail('invalid_tool_approval');hub.db.prepare('UPDATE tool SET risk=?,enabled=?,approved_fingerprint=fingerprint,previous_metadata=NULL WHERE id=?').run(b.risk,b.enabled?1:0,tool.id);hub.db.prepare('DELETE FROM approval WHERE tool_id=?').run(tool.id);audit('tool.approve',tool.id);return {tool:parseTool(getTool(tool.id))};});
- app.post('/api/v1/approvals',{preHandler:requireOwner},async req=>{const b=body(req);if(typeof b.client_id!=='string'||typeof b.tool_id!=='string'||!b.arguments||typeof b.arguments!=='object'||Array.isArray(b.arguments))fail('invalid_approval');const tool=getTool(b.tool_id);const c=hub.db.prepare('SELECT * FROM client WHERE id=?').get(b.client_id) as ClientRow|undefined;if(!c)fail('invalid_client');authorization(c,tool);if(!['write','delete'].includes(tool.risk))fail('approval_not_required');if(!ajv.compile(JSON.parse(tool.input_schema))(b.arguments))fail('invalid_arguments');const ttl=Number(b.ttl_seconds??120);if(!Number.isInteger(ttl)||ttl<1||ttl>300)fail('invalid_approval_ttl');const id=randomUUID();hub.db.prepare('INSERT INTO approval VALUES(?,?,?,?,?,NULL)').run(id,c.id,tool.id,argumentHash(b.arguments),Date.now()+ttl*1000);audit('approval.create',id);return {approval_id:id};});
+ app.post('/api/v1/approvals',{preHandler:requireOwner},async req=>{const b=body(req);if(typeof b.client_id!=='string'||typeof b.tool_id!=='string'||!b.arguments||typeof b.arguments!=='object'||Array.isArray(b.arguments))fail('invalid_approval');const tool=getTool(b.tool_id);const c=hub.db.prepare('SELECT * FROM client WHERE id=?').get(b.client_id) as ClientRow|undefined;if(!c)fail('invalid_client');authorization(c,tool);if(!['write','delete'].includes(tool.risk))fail('approval_not_required');const schema=JSON.parse(tool.input_schema);if(!schemaValidator(schema).compile(schema)(b.arguments))fail('invalid_arguments');const ttl=Number(b.ttl_seconds??120);if(!Number.isInteger(ttl)||ttl<1||ttl>300)fail('invalid_approval_ttl');const id=randomUUID();hub.db.prepare('INSERT INTO approval VALUES(?,?,?,?,?,NULL)').run(id,c.id,tool.id,argumentHash(b.arguments),Date.now()+ttl*1000);audit('approval.create',id);return {approval_id:id};});
 
  async function invoke(req:FastifyRequest,name:string,args:Record<string,unknown>,approval:unknown,cancel:AbortSignal):Promise<CallToolResult>{
   const start=Date.now();let principal='client';let resource='unknown';let release:(()=>void)|undefined;let timer:NodeJS.Timeout|undefined;let calledUpstream:string|undefined;
   try{
    const c=hub.requireClient(req);principal=c.id;const tool=hub.db.prepare('SELECT * FROM tool WHERE gateway_name=?').get(name) as ToolRow|undefined;if(!tool)fail('policy_denied',403);resource=tool.id;
-   bounded(args);const u=authorization(c,tool);if(!ajv.compile(JSON.parse(tool.input_schema))(args))fail('invalid_arguments');release=lock(u);
+   bounded(args);const u=authorization(c,tool);const schema=JSON.parse(tool.input_schema);if(!schemaValidator(schema).compile(schema)(args))fail('invalid_arguments');release=lock(u);
    const revoked=new AbortController();const signal=AbortSignal.any([cancel,revoked.signal,AbortSignal.timeout(u.timeout_ms)]);
    timer=setInterval(()=>{try{authorization(c,tool);}catch{revoked.abort();}},50);timer.unref();
    const execute=async(call:()=>Promise<CallToolResult>,secrets:string[]):Promise<CallToolResult>=>{
