@@ -128,3 +128,9 @@ Manual review remains available for a classification override. Its behavior choi
 Getting started uses enabled, fingerprint-matched tools and valid grants, rather than treating discovery or the existence of a client as completed permission setup. Account connections are optional when the MCP server needs no credentials.
 
 The scale browser test registers **50 MCP entries against one authenticated local MCP fixture**, discovers **50 tools each**, auto approves the **2500 tools** in one selected-server batch, saves 50 grants through one server checkbox and 2500 grants through Select all available, and lists 2500 tools through an actual SDK client. It also exercises rate-limit recovery during a burst of earlier owner operations. Evidence: [scale result](evidence/bulk-setup-scale.json), [desktop](evidence/bulk-access-1280.png), [mobile](evidence/bulk-access-390.png).
+
+## Long tool descriptions
+
+Tool review shows a first-sentence preview capped at 240 characters. The full provider description remains available through a keyboard-accessible disclosure. Recognized `<examples>` and `<hints>` blocks appear as separate examples and usage notes; all content is rendered as text, never provider HTML. Profiles use the compact preview while search still covers the full description. Stored tool metadata is unchanged.
+
+The browser regression covers collapsed and expanded descriptions at 1280px and 390px in both themes, keyboard activation, wrapping and an HTML-injection canary. Fixture screenshots: [desktop preview](evidence/tool-description-1280.png), [mobile preview](evidence/tool-description-390.png), [expanded mobile](evidence/tool-description-expanded-390.png).

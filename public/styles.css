@@ -149,3 +149,13 @@ dialog.grants-dialog { width:min(52rem,calc(100% - 2rem)); }
 .grant-group summary { font-size:.8125rem; }
 .access-help { border-left:3px solid var(--accent); background:var(--soft); padding:1rem; margin-bottom:1rem; }
 .access-help p { margin:0 0 .75rem; }
+
+.tool-description { max-width:74ch; min-width:0; }
+.tool-description-preview { max-width:74ch; margin:.75rem 0; font-size:.9375rem; }
+.tool-description > details { border-top:0; padding-top:0; margin:.25rem 0 1rem; }
+.tool-description summary { color:var(--ink); font-size:.8125rem; }
+.description-content { margin-top:.75rem; padding:1rem; border-left:2px solid var(--line); background:var(--bg); }
+.description-prose { white-space:pre-wrap; font-size:.875rem; line-height:1.65; }
+.description-section { margin:1rem 0 0; }
+.description-section h4 { margin:0 0 .5rem; font-size:.875rem; }
+.description-section pre { margin:0; }

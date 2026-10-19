@@ -47,6 +47,26 @@ function action(label, fn, cls = '', icon = '') {
 const actions = (...nodes) => el('div', {class: 'actions'}, nodes);
 const section = (title, ...children) => el('section', {class: 'panel'}, el('h2', {}, title), children);
 const details = (title, ...children) => { const open = children.at(-1) === true ? children.pop() : false; return el('details', {open}, el('summary', {}, title), children); };
+function descriptionSummary(value) {
+  const text = String(value || 'No description supplied.').split(/<(?:examples|hints)>/i)[0].replace(/\s+/g, ' ').trim() || 'See tool details.';
+  const sentence = text.match(/^.*?[.!?](?:\s|$)/)?.[0].trim() || text;
+  return sentence.length > 240 ? `${sentence.slice(0, 237).replace(/\s+\S*$/, '')}…` : sentence;
+}
+function toolDescription(value) {
+  const text = String(value || 'No description supplied.').trim(), preview = descriptionSummary(text);
+  if (preview === text.replace(/\s+/g, ' ')) return p(preview, 'tool-description-preview muted');
+  const content = [], blocks = [...text.matchAll(/<(examples|hints)>([\s\S]*?)<\/\1>/gi)];
+  let offset = 0;
+  for (const block of blocks) {
+    const prose = text.slice(offset, block.index).trim();
+    if (prose) content.push(p(prose, 'description-prose'));
+    content.push(el('section', {class: 'description-section'}, el('h4', {}, block[1].toLowerCase() === 'examples' ? 'Examples' : 'Usage notes'), block[1].toLowerCase() === 'examples' ? code(block[2].trim()) : p(block[2].trim(), 'description-prose')));
+    offset = block.index + block[0].length;
+  }
+  const remaining = text.slice(offset).trim();
+  if (remaining) content.push(p(remaining, 'description-prose'));
+  return el('div', {class: 'tool-description'}, p(preview, 'tool-description-preview muted'), details(blocks.length ? 'Usage notes & examples' : 'Full description', el('div', {class: 'description-content'}, content)));
+}
 const time = (value) => value ? new Date(Number(value)).toLocaleString() : 'Never';
 const listOf = (result, key) => Array.isArray(result) ? result : result[key] || [];
 const idPath = (base, id, suffix = '') => `/api/v1/${base}/${encodeURIComponent(id)}${suffix}`;
@@ -400,7 +420,7 @@ async function editGrants(profileRow, tools, connections) {
     const checkbox = el('input', {type: 'checkbox', 'aria-label': `Allow ${name}`, disabled: !available && !retained, 'aria-describedby': `grant-info-${tool.id}`}); checkbox.checked = !!retained;
     if (retained) selected.set(tool.id, tool);
     const reason = !available ? 'Not enabled yet. Use Auto approve tools in MCP servers, or review this tool manually.' : tool.risk === 'read' ? 'Can view data.' : 'Can change data. Each call also needs your one-use approval.';
-    const info = el('div', {class: 'grant-copy', id: `grant-info-${tool.id}`}, el('strong', {}, name), p(tool.description || 'No description supplied by this server.', 'grant-description'), p(`${account} · ${reason}`, 'hint'), existing && !retained ? p('Previous access no longer matches this tool or account. Saving removes that outdated grant.', 'error') : null);
+    const info = el('div', {class: 'grant-copy', id: `grant-info-${tool.id}`}, el('strong', {}, name), p(descriptionSummary(tool.description), 'grant-description'), p(`${account} · ${reason}`, 'hint'), existing && !retained ? p('Previous access no longer matches this tool or account. Saving removes that outdated grant.', 'error') : null);
     const entry = el('div', {class: 'grant-entry'}, el('label', {class: 'grant-toggle'}, checkbox, info), el('span', {class: 'status'}, {read: 'Read only', write: 'Write', delete: 'Delete'}[tool.risk] || 'Needs review'));
     checkbox.addEventListener('change', () => { if (checkbox.checked) selected.set(tool.id, tool); else selected.delete(tool.id); updateCount(); });
     const groupKey = tool.upstream_id || tool.upstream_name || 'unknown';
@@ -511,7 +531,7 @@ const renderers = {
       const drifted = row.approved_fingerprint && row.fingerprint !== row.approved_fingerprint;
       const status = drifted ? 'Metadata drift: quarantined' : row.enabled ? `Approved ${row.risk}` : row.upstream_status === 'disabled' ? 'Upstream disabled' : 'Pending review';
       const item = summaryRow(row.name || 'Unnamed tool', status, [`Server: ${row.upstream_name || 'MCP server'}`, row.upstream_status && row.upstream_status !== 'active' ? `Server state: ${row.upstream_status}` : ''], action('Review tool', () => reviewTool(row)), row.enabled ? action('Disable tool', () => confirmAction('Disable tool', 'Clients lose access to this tool until it is enabled again.', () => api(idPath('tools', row.id, '/approve'), 'POST', {risk: row.risk, enabled: false}), 'Disable tool'), 'danger') : null);
-      item.append(p(row.description || 'No description supplied.', 'muted'), details('Current schema, annotations & fingerprint', p('Gateway identifier', 'hint'), code(row.gateway_name), p(`Current fingerprint: ${row.fingerprint || 'Unavailable'}`, 'mono'), p(`Approved fingerprint: ${row.approved_fingerprint || 'Not approved'}`, 'mono'), code({input_schema: row.input_schema, annotations: row.annotations})));
+      item.append(toolDescription(row.description), details('Current schema, annotations & fingerprint', p('Gateway identifier', 'hint'), code(row.gateway_name), p(`Current fingerprint: ${row.fingerprint || 'Unavailable'}`, 'mono'), p(`Approved fingerprint: ${row.approved_fingerprint || 'Not approved'}`, 'mono'), code({input_schema: row.input_schema, annotations: row.annotations})));
       if (drifted) {
         const previous = typeof row.previous_metadata === 'string' ? JSON.parse(row.previous_metadata) : row.previous_metadata;
         item.append(section('Metadata changed since approval', p('Calls remain quarantined until the current metadata is explicitly approved.'), previous ? el('div', {class: 'split'}, el('div', {}, el('h3', {}, 'Previously approved'), code(previous)), el('div', {}, el('h3', {}, 'Current discovery'), code({description: row.description, input_schema: row.input_schema, annotations: row.annotations, fingerprint: row.fingerprint}))) : p('The previous schema snapshot is unavailable. Compare the approved and current fingerprints above, then inspect the current metadata before approving.')));

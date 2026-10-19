@@ -367,11 +367,38 @@ test('browser uses the actual app for claim, policy edits, credentials, client i
       hub.db.prepare('INSERT INTO tool(id,upstream_id,name,gateway_name,description,input_schema,fingerprint,approved_fingerprint,risk,enabled) VALUES(?,?,?,?,?,?,?,?,?,?)').run(id,accessServer,name,`u_${accessServer.replaceAll('-','')}__${'f'.repeat(62)}${String(i).padStart(2,'0')}`,'Find project information in the workspace.','{}','reviewed',i===29?null:'reviewed',i===29?'unreviewed':'read',i===29?0:1);
     }
     hub.db.prepare('INSERT INTO profile_grant VALUES(?,?,NULL,?)').run(accessProfile,accessTools[0],'read');
+    const longDescription='Search project records in this workspace. '+('Use filters to narrow results and return matching project details. '.repeat(4))+"<examples>search_projects(query='active projects')\nsearch_projects(query='recent updates')</examples><hints>Choose exact filters when needed. <img src=x onerror=alert(1)></hints>";
+    hub.db.prepare('UPDATE tool SET description=? WHERE id=?').run(longDescription,accessTools[0]);
+    await view('tools');
+    await page.getByRole('searchbox',{name:'Search tools',exact:true}).fill('search_projects');
+    const descriptionRow=page.locator('article').filter({has:page.getByRole('heading',{name:'search_projects',exact:true})});
+    assert.equal(await descriptionRow.locator('.tool-description-preview').innerText(),'Search project records in this workspace.');
+    const usage=descriptionRow.locator('.tool-description > details');
+    await page.locator('#notice').waitFor({state:'hidden'});
+    for(const width of [1280,390]){
+      await page.setViewportSize({width,height:900});
+      for(const theme of ['light','dark']){
+        await page.evaluate(theme=>document.documentElement.dataset.theme=theme,theme);
+        assert.equal(await usage.getAttribute('open'),null,'Long server descriptions must start collapsed');
+        assert.equal((await descriptionRow.innerText()).includes('<examples>'),false);
+        if(process.env.HUB_CAPTURE_DASHBOARD==='true'&&theme==='light')await descriptionRow.screenshot({path:fileURLToPath(new URL(`../docs/evidence/tool-description-${width}.png`,import.meta.url))});
+        await usage.locator('summary').focus();await page.keyboard.press('Enter');
+        await usage.locator('h4').first().waitFor();
+        assert.equal(await usage.getByRole('heading',{name:'Examples',exact:true}).isVisible(),true);
+        assert.equal(await usage.getByRole('heading',{name:'Usage notes',exact:true}).isVisible(),true);
+        assert.equal(await descriptionRow.locator('img,script').count(),0,'Server descriptions must remain text, never HTML');
+        assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth),true,'Expanded examples must wrap on mobile');
+        if(process.env.HUB_CAPTURE_DASHBOARD==='true'&&theme==='dark')await descriptionRow.screenshot({path:fileURLToPath(new URL(`../docs/evidence/tool-description-expanded-${width}.png`,import.meta.url))});
+        await usage.locator('summary').focus();await page.keyboard.press('Enter');
+      }
+    }
+    await page.setViewportSize({width:1280,height:900});
     await view('profiles');
     const research=()=>page.locator('article').filter({has:page.getByRole('heading',{name:'Research assistant',exact:true})});
     await research().getByRole('button',{name:'Edit tool access'}).click();
     const grantDialog=page.getByRole('dialog');
     await grantDialog.getByRole('heading',{name:'Tool access: Research assistant'}).waitFor();
+    assert.equal(await grantDialog.locator('.grant-entry').filter({has:page.getByRole('checkbox',{name:'Allow search_projects',exact:true})}).locator('.grant-description').innerText(),'Search project records in this workspace.');
     assert.equal(await grantDialog.getByRole('checkbox',{name:'Allow search_projects',exact:true}).isChecked(),true);
     assert.equal(await grantDialog.getByRole('checkbox',{name:'Allow unreviewed_tool',exact:true}).isDisabled(),true);
     assert.equal((await grantDialog.innerText()).includes(`u_${accessServer.replaceAll('-','')}__`),false,'Machine identifiers must not be primary grant labels');
