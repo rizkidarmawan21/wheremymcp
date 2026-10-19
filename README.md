@@ -6,6 +6,10 @@ Connect remote MCP servers, approve trusted servers in bulk, and choose what eac
 
 Development release. Review the [current limitations](#current-limitations) before deployment.
 
+![WhereMyMCP dashboard showing gateway policy, registry inventory and recent activity](assets/dashboard-preview.png)
+
+*Dashboard preview from an isolated test instance.*
+
 [Quick start](#quick-start) · [Connect an agent](#connect-an-agent) · [Documentation](#documentation) · [Development](#development)
 
 ## Features
