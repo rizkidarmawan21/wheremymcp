@@ -1,10 +1,10 @@
-# Implementation contracts
+# API and data contracts
 
 All timestamps are Unix milliseconds. JSON fields use snake_case. Admin responses never include encrypted or plaintext credential fields. Errors use `{error, message, request_id}`.
 
 ## Database schema
 
-Root creates these tables in `src/core.ts` before workers run. All opaque IDs are UUID strings unless stated otherwise.
+Database tables are defined in `src/core.ts`. All opaque IDs are UUID strings unless stated otherwise.
 
 - `owner(id INTEGER PRIMARY KEY CHECK(id=1), password_hash, totp_secret, mfa_enabled INTEGER, last_totp_step INTEGER, created_at INTEGER)`; totp_secret is encrypted.
 - `session(id TEXT PRIMARY KEY, token_hash TEXT UNIQUE, csrf_hash TEXT, csrf_token TEXT encrypted, created_at INTEGER, last_used INTEGER, expires_at INTEGER)`.

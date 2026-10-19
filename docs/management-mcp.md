@@ -72,13 +72,3 @@ Delete/revoke tools require `confirm: true`. Enabling server tools requires `tru
 - Restore with `--invalidate-clients` revokes unified clients and any legacy management tokens. Without invalidation, existing permissions are retained. Older supported backups migrate forward without granting management implicitly.
 
 The gateway emergency stop blocks ordinary provider calls. Management access remains available to inspect and repair configuration; use dashboard token revocation to stop a management client.
-
-## Verification
-
-`tests/management.test.ts` exercises real HTTP SDK discovery/calls, server setup, bulk approval/grants, provider and management tools using one token, continued provider write approval, scope changes, owner-only permission grants/privileged rotation, imported name collisions, merged pagination, emergency-stop behavior, MFA, expiry/revocation and audit attribution. The browser suite issues a unified token, edits management permissions, generates Claude configuration, invokes management through `/mcp`, rotates the token while preserving the secret dialog and revokes it. Migration tests verify v3 credential preservation/default-off permissions; backup tests verify token preservation/invalidation.
-
-Screenshots use a disposable test owner: [desktop](evidence/management-1280.png), [mobile](evidence/management-390.png). Live provider OAuth consent and other clients' native configuration formats are outside these fixture checks.
-
-The earlier separate-endpoint implementation passed 76 tests and native Codex CLI 0.163.0 discovery before consolidation. The unified implementation has additional scope, migration, name-collision, lifecycle and browser coverage described above. These fixture checks do not establish live provider consent or native compatibility with every generated client format.
-
-Unified verification on 2026-10-19 passed **81/81 tests**, typecheck/build, dependency audit and static security rules. The local initialized Docker instance migrated from schema v3 to v4 after an encrypted backup; existing credentials, profiles, grants and provider rows were preserved, and existing clients retained empty management scopes. Served dashboard JavaScript and compiled application files matched the verified build. A temporary Read-enabled client exposed **148 tools on one `/mcp` connection** through both the HTTP SDK and native Codex CLI 0.163.0: 138 provider tools and 10 management tools, with no native tool-list error. Write and direct owner-REST access were denied. The temporary client was deleted; persistent user permissions and global Codex configuration were not changed.

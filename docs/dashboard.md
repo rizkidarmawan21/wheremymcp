@@ -1,6 +1,6 @@
 # Owner dashboard
 
-The dashboard is a same-origin HTML/CSS/ES-module application served by the Fastify app. It has no frontend framework, bundler, external fonts, analytics or runtime asset requests. Design direction and the reasons for palette, typography, surfaces and responsive composition are in [DESIGN.md](../DESIGN.md).
+The dashboard is a same-origin HTML/CSS/ES-module application served by the Fastify app. It has no frontend framework, bundler, external fonts, analytics or runtime asset requests.
 
 ## Implemented workspaces
 
@@ -34,78 +34,9 @@ Native GitHub/Google/Slack connections expose native provider tools. A remote MC
 - Encrypted backup download uses an owner-authenticated POST with CSRF and password/TOTP step-up. The browser receives the encrypted `.umcp` blob; the external master key remains separate.
 - Pending forms and action buttons prevent duplicate submissions. Failed forms keep their values and show a readable error. Failed data views expose a retry action. Empty views identify the next useful owner action.
 
-## Browser evidence
-
-Run `npx playwright install chromium` once, then `npx tsx --test tests/dashboard.test.ts`. CI must install Chromium with its system dependencies. `HUB_CAPTURE_DASHBOARD=true npx tsx --test tests/dashboard.test.ts` additionally writes these screenshots:
-
-- [Desktop, light theme](evidence/dashboard-desktop.png), actual isolated Fastify app and SQLite with an issued test client, after its token dialog has closed.
-- [Phone, dark theme](evidence/dashboard-mobile.png), the same real backend with the shipped theme control and collapsed mobile directory.
-
-The fixtures are explicitly browser-test records. Screenshots contain no password, session cookie, API/client token, TOTP secret or recovery code. The user's Docker Compose database is not used or claimed by these tests.
-
-The actual backend browser test verifies claim and ten recovery-code records, login and reload, credential encryption, exact-IP upstream registration, server and tool approval, account-bound grants and profile clone, hashed client issuance, an exact-call approval record, retention persistence, encrypted backup creation/download, secret-free config download, config preview without writes followed by a persisted import, emergency stop, recovery-code replacement, password change and reauthentication, real TOTP enable/disable, and logout. Tool discovery uses an authenticated local HTTP MCP fixture. The actual browser-created approval is exercised through an SDK tool call, including missing-approval and replay rejection.
-
-The contract-browser test additionally covers unavailable-server retry, escaped malicious upstream metadata, approved/current drift review, client token rotation, clipboard copy, generated-config copy, invalid allowlist input, upstream refresh/approval/disable, connection rename/secret replacement and revoke, OAuth handoff URL/scope disclosure, skill file preview/import/approval/delete, audit filtering and equal-timestamp cursor pagination, and the mobile menu. Each navigation destination and every refresh action is clicked. Both browser tests assert no uncaught page errors.
-
-Click-through record:
-
-| Control | Observed behavior |
-| --- | --- |
-| Claim, login, reload, logout | Creates one owner; displays recovery codes once; authenticated views survive reload using recovered CSRF; logout returns to login. |
-| Refresh, retry, menu and navigation | Registry data reloads; controlled error retries successfully; all twelve navigation destinations open; phone Menu opens the directory and selecting a destination closes it. |
-| Server and tool controls | Register honors exact local addresses; invalid CIDRs show validation; refresh calls discovery endpoint; approve/disable change policy; tool review submits risk and enable state; schema text remains escaped. |
-| Account and profile controls | Secret is encrypted and absent from rendered registry; rename/replacement/revoke call their routes; grants retain stable connection ID; clone copies existing grants. |
-| Client controls | Create/rotate displays a replacement only in a closable secret dialog; copy uses Clipboard API; generated config references an environment variable; revoke requires confirmation and cancel leaves it unchanged. |
-| Approval and skill controls | Exact call approval persists; skill preview precedes import; stored file text can be inspected; approval and deletion require confirmation. |
-| Owner security controls | Setup secret and URI open; real TOTP enables MFA; disable requires password plus another valid code; password change ends the session; recovery rotation reveals replacement codes. |
-| Audit controls | Filters reload results; older-page request uses the opaque cursor, preserving events sharing a timestamp. |
-| Backup and config controls | Step-up creates/downloads encrypted file; export downloads JSON without credential canary; reading a JSON file fills the preview; preview does not write; confirmed import creates the expected profile. |
-| Theme and viewport controls | Real theme button changes both theme and label; 360, 768 and 1365px layouts hold in both themes for all twelve workspaces; 200% text size holds at 360px; keyboard Escape closes dialogs. |
-
-## Accessibility and layout
+## Accessibility
 
 Native labeled forms, buttons, links, details and dialog elements provide keyboard behavior and focus containment. Escape closes dialogs and the phone directory. Visible focus rings are provided in both themes; a skip link moves to the main workspace. All data views announce loading and errors; state labels carry meaning in text. Buttons, fields, navigation destinations and summary controls have at least 44px targets. Checkbox labels provide the full target area. JSON and machine identifiers wrap without causing page overflow.
-
-The automated browser sweep checks all twelve workspaces at three widths and two themes (72 combinations), plus 200% text resizing at phone width. Screenshots were opened for visual inspection. Text pairing checks used the antislop contrast checker: normal/muted/danger/accent text passes 4.5:1 in both themes; field boundaries pass 3:1 (light weakest pairing 3.05:1, dark 3.56:1); focus colors exceed 3:1. Main text is 15.30:1 in light and 13.36:1 in dark. Text and button sizing use rem and fluid scales where appropriate.
-
-A real mobile software keyboard, screen-reader session and installed agent applications were not exercised. External OAuth consent and provider credentials were not supplied. Those checks remain separate from local dashboard verification. Restore verification is explicitly not tracked by the dashboard; listed backup creation alone is never described as a tested restore. Audit account aliases are event-time snapshots; later account renames do not rewrite historical events. Profile/account IDs remain visible for exact filtering even when current records have changed.
-
-## Antislop delivery gate
-
-Direction is the authorized utility workspace in DESIGN.md, ENERGY 2 / RHYTHM 2 / MOTION 1. The gate below covers the local implementation and the recorded browser evidence; it does not claim external provider or client compatibility verification.
-
-- R-02 PASS: authored UI copy has no em dash.
-- R-03 PASS: 72 width/theme/workspace combinations and phone text resizing show no page overflow; screenshots visually inspected.
-- R-17 PASS: inventory and records come from APIs; screenshots use explicitly identified isolated browser fixtures.
-- R-18 PASS: no testimonials, invented people or profile photos.
-- R-23 PASS: authorized text-only product identity; no generated assets.
-- R-24 PASS: every navigation destination is implemented and clicked.
-- R-25 PASS: computed text contrast exceeds AA and field/focus boundaries meet 3:1 in both themes.
-- R-26 PASS: controls have actual routes, state changes or native disclosure behavior; click-through evidence above.
-- R-27 PASS: empty descriptions, loading announcements, request errors and retry behavior exist; controlled failure exercised.
-- R-28 PASS: no FAQ filler.
-- R-32 PASS: native controls, skip link, visible focus, native modal focus and Escape dismissal; keyboard Escape exercised.
-- R-33 PASS: theme and responsive behavior are authored directly in source, without CSS-rewriting runtime helpers.
-- R-34 PASS: actual theme toggle, both-theme browser sweeps and contrast checks.
-- R-35 PASS: actual backend and contract-browser suites run; click-through record, screenshots and uncaught-error checks retained.
-- R-36 PASS: no compliance, performance or customer claims.
-- R-37 PASS: design direction and dials recorded before UI source creation.
-- R-38 PASS: no realistic-looking filler records in shipped source; actual API state or explanatory empty state.
-- R-01 PASS: restrained amber/ink palette serves primary owner actions; no default gradients or glow.
-- R-04 PASS: text labels provide meaning without a decorative icon library.
-- R-06 PASS: local readable sans typography and machine-only monospace have written purposes.
-- R-07 PASS: no decorative grid or patterned background.
-- R-08 PASS: no decorative button arrows.
-- R-09 PASS: rectangular labels convey real policy state; no marketing capsules.
-- R-10 PASS: no glass surfaces.
-- R-12 PASS: shadows mark the blocking dialog and transient feedback, not every registry row.
-- R-13 PASS: no glow.
-- R-14 PASS: workspaces use content-specific registry rows, policy forms, schema comparisons and audit lists.
-- R-19 PASS: only interaction feedback; no loops or entrance choreography, with reduced-motion support.
-- R-22 PASS: no unrelated illustrations.
-- Liveliness PASS: balanced heading contrast, structural spacing, amber primary action and repeated namespace/fingerprint motif match the declared dials.
-- C-1/C-2/C-3/C-4/C-5 PASS: written purposes, working routes, task-driven content, state/theme/viewport resilience and sourced records.
-- R-05/R-11/R-15/R-16/R-20/R-21/R-29/R-30/R-31 PASS: purposeful utility composition, consistent small radii, concrete action labels, no marketing filler, working theme choice, constrained palette and documented major decisions.
 
 ## Profiles and tool access
 
@@ -114,8 +45,6 @@ A profile is an allowlist shared by the agent clients assigned to it. A grant al
 Use **Edit tool access**, check the tools a client needs, and choose **Save access**. Uncheck a tool to remove its grant. **Clear selection** removes every check; changes apply only after saving. Internal gateway identifiers remain available in Tool review details, while permission controls use the original tool names and descriptions.
 
 A custom profile can be deleted. If clients use it, the confirmation requires a replacement profile and explains the immediate permission change. Client tokens remain valid and use the replacement profile; revoked clients remain revoked. Pending approvals are cleared, and the removed profile's grants are deleted without being copied into the replacement. The built-in Default profile cannot be deleted; clearing its access blocks all tools for its clients.
-
-The browser regression uses 30 tools, including a long name and an unreviewed tool. It verifies modal boundaries and visible save controls at 1280px and 390px in both themes, search, grant removal, clearing all access, deleting unused profiles, and explicit client reassignment before deleting a bound profile.
 
 ## Setup without per-tool review
 
@@ -128,16 +57,12 @@ Manual review remains available for a classification override. Its behavior choi
 
 Getting started uses enabled, fingerprint-matched tools and valid grants, rather than treating discovery or the existence of a client as completed permission setup. Account connections are optional when the MCP server needs no credentials.
 
-The scale browser test registers **50 MCP entries against one authenticated local MCP fixture**, discovers **50 tools each**, auto approves the **2500 tools** in one selected-server batch, saves 50 grants through one server checkbox and 2500 grants through Select all available, and lists 2500 tools through an actual SDK client. It also exercises rate-limit recovery during a burst of earlier owner operations. Evidence: [scale result](evidence/bulk-setup-scale.json), [desktop](evidence/bulk-access-1280.png), [mobile](evidence/bulk-access-390.png).
-
 ## Long tool descriptions
 
 Tool review shows a first-sentence preview capped at 240 characters. The full provider description remains available through a keyboard-accessible disclosure. Recognized `<examples>` and `<hints>` blocks appear as separate examples and usage notes; all content is rendered as text, never provider HTML. Profiles use the compact preview while search still covers the full description. Stored tool metadata is unchanged.
-
-The browser regression covers collapsed and expanded descriptions at 1280px and 390px in both themes, keyboard activation, wrapping and an HTML-injection canary. Fixture screenshots: [desktop preview](evidence/tool-description-1280.png), [mobile preview](evidence/tool-description-390.png), [expanded mobile](evidence/tool-description-expanded-390.png).
 
 ## MCP discovery errors
 
 Missing, expired or rejected account authentication returns the controlled `upstream_auth_required` code with instructions to authorize or update the account in Connections. HTTP 401/403 from a remote MCP server receives the same safe classification. Other discovery failures explain endpoint, availability and schema checks without disclosing upstream exception text. Unexpected server errors remain generic.
 
-A completely failed approval batch displays **Tool approval needs attention**, its per-server cause and request ID, and **Review connections**. It does not suggest granting tools that were never enabled. Browser regression screenshots: [desktop failure](evidence/tool-approval-auth-error-1280.png), [mobile failure](evidence/tool-approval-auth-error-390.png).
+A completely failed approval batch displays **Tool approval needs attention**, its per-server cause and request ID, and **Review connections**. It does not suggest granting tools that were never enabled.

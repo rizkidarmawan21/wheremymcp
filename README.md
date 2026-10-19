@@ -4,11 +4,7 @@ A self-hosted MCP gateway for your tools, accounts and agent clients.
 
 Connect remote MCP servers, approve trusted servers in bulk, and choose what each agent can use. WhereMyMCP keeps provider credentials on your instance and issues separate, revocable tokens for your clients. One owner manages access through the dashboard.
 
-Development release. See [current limitations](#current-limitations) and the [verification report](docs/e2e-audit-2026-10-18.md) for the scope of local testing.
-
-![WhereMyMCP dashboard with gateway policy, linked registry inventory and recent activity](docs/evidence/overview-1280-light.png)
-
-*Screenshot from an isolated test instance. [Mobile view](docs/evidence/overview-390-dark.png).*
+Development release. Review the [current limitations](#current-limitations) before deployment.
 
 [Quick start](#quick-start) · [Connect an agent](#connect-an-agent) · [Documentation](#documentation) · [Development](#development)
 
@@ -153,8 +149,6 @@ Existing installations created under the former UnifyMCP name must retain their 
 - The dashboard lists backups but does not track successful restore drills.
 - Native client applications, live OAuth consent, physical mobile devices, screen readers and Kubernetes runtime need separate verification.
 
-The [implementation plan](docs/implementation-plan.md) and [E2E audit](docs/e2e-audit-2026-10-18.md) distinguish implemented behavior, tested behavior and remaining gaps.
-
 ## Documentation
 
 | Guide | Contents |
@@ -162,13 +156,12 @@ The [implementation plan](docs/implementation-plan.md) and [E2E audit](docs/e2e-
 | [Installation](docs/install/README.md) | Docker, source setup, bootstrap recovery and deployment configuration. |
 | [Integrations](docs/integrations.md) | Remote MCP authentication and provider setup. |
 | [Dashboard](docs/dashboard.md) | Owner workflows, client configuration and UI behavior. |
-| [Management MCP](docs/management-mcp.md) | Built-in configuration tools, separate token setup, scopes and security boundaries. |
+| [Management MCP](docs/management-mcp.md) | Unified client-token setup, optional management scopes and security boundaries. |
 | [Gateway compatibility](docs/compatibility/gateway.md) | Transports, authorization, approvals and resource limits. |
 | [Backup and restore](docs/install/backup-restore.md) | Encrypted backups, offline restore and key rotation. |
 | [Public deployment](docs/security/public-deployment.md) | HTTPS proxy, MFA and network boundaries. |
 | [API contracts](docs/contracts.md) | Routes, data model and response conventions. |
 | [Rename compatibility](docs/rename-compatibility.md) | Existing volumes, tokens, encryption and approval metadata. |
-| [E2E audit](docs/e2e-audit-2026-10-18.md) | Feature coverage, screenshots and verification evidence. |
 
 ## Development
 
@@ -191,10 +184,10 @@ src/gateway/    MCP transport, discovery and call policy
 public/         Owner dashboard
 tests/          Unit, integration, browser and container checks
 deploy/         Container initialization, proxy example and Helm chart
-docs/           Installation, contracts and verification
+docs/           Installation, integrations and API guides
 ```
 
-Local checks cover browser workflows, SDK calls, backup/restore, migrations, OAuth failure paths and a disposable Docker deployment. The [dated E2E report](docs/e2e-audit-2026-10-18.md) records the results and remaining boundaries.
+Tests cover browser workflows, SDK calls, backup/restore, migrations and OAuth failure paths. Live provider consent and installed-client compatibility require their own checks.
 
 Follow [CONTRIBUTING.md](CONTRIBUTING.md) for changes. See [CHANGELOG.md](CHANGELOG.md) for repository history.
 

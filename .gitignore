@@ -8,6 +8,11 @@ dist/
 .owner-recovery-codes.txt
 docs/worklog.md
 docs/superpowers/
+/docs/evidence/
+/docs/e2e-audit-*.md
+/docs/evidence-report.md
+/docs/implementation-plan.md
+/DESIGN.md
 data/
 secrets/
 *.db
