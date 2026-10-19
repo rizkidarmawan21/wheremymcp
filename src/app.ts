@@ -45,12 +45,15 @@ export async function createApp(hub:Hub){
   });
   app.setErrorHandler((error,request,reply)=>{
     let status=(error as any).statusCode||500;let message='Request failed';
+    const discoveryMessages:Record<string,string>={upstream_auth_required:'MCP server authentication is missing, expired or rejected. Open Connections, authorize or update its account, then retry Auto approve tools.',upstream_discovery_failed:'Could not discover tools from this MCP server. Check its endpoint, server availability and tool schemas, then retry Refresh tools.'};
+    const discoveryCode=Object.hasOwn(discoveryMessages,(error as Error).message)?(error as Error).message:undefined;
     if(error instanceof z.ZodError){status=400;message='Invalid request: '+error.issues.slice(0,4).map(i=>i.path.join('.')||'body').join(', ');}
     else if((error as any).code?.startsWith('SQLITE_CONSTRAINT')){status=409;message='Record conflicts with existing state';}
     else if(status<500){message=(error as Error).message;}
     else if(status===503){message='Service temporarily unavailable';}
+    if(discoveryCode)message=discoveryMessages[discoveryCode]!;
     if(status>=500)hub.audit({action:'http.error',outcome:'error',detail:'internal_error'});
-    reply.code(status).send({error:status===429?'rate_limited':status===400?'invalid_request':status===401?'unauthorized':status===403?'forbidden':'request_failed',message,request_id:request.id});
+    reply.code(status).send({error:discoveryCode??(status===429?'rate_limited':status===400?'invalid_request':status===401?'unauthorized':status===403?'forbidden':'request_failed'),message,request_id:request.id});
   });
   app.get('/health/live',async()=>({status:'alive'}));
   app.get('/health/ready',async(_request,reply)=>{

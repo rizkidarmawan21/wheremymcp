@@ -19,12 +19,13 @@ async function fixture(t:any) {
  CREATE TABLE approval(id TEXT PRIMARY KEY,client_id TEXT,tool_id TEXT,arguments_hash TEXT,expires_at INTEGER,used_at INTEGER);`);
  let annotations:Record<string,unknown>={readOnlyHint:true};let advertised=true;let beforeList:(()=>void)|undefined;
  let description='Echo';let calls=0;let delay=0;let replyText:string|undefined;let inputSchema:any={type:'object',properties:{text:{type:'string'}},required:['text'],additionalProperties:false};const authHeaders:string[]=[];const events:any[]=[];const settings=new Map();
+ let httpStatus=200;
  const handler=createMcpHandler(()=>{
   const server=new Server({name:'fake',version:'1'},{capabilities:{tools:{}}});
   server.setRequestHandler('tools/list',()=>{const hook=beforeList;beforeList=undefined;hook?.();return {tools:advertised?[{name:'echo',description,inputSchema,annotations}]:[]};});
   server.setRequestHandler('tools/call',async req=>{calls++;if(delay)await new Promise(resolve=>setTimeout(resolve,delay));return {content:[{type:'text',text:replyText??String(req.params.arguments?.text)}]};});return server;
  });
- const nodeHandler=toNodeHandler(handler);const upstream=createServer((req,res)=>{authHeaders.push(req.headers.authorization??'');void nodeHandler(req,res);});
+ const nodeHandler=toNodeHandler(handler);const upstream=createServer((req,res)=>{authHeaders.push(req.headers.authorization??'');if(httpStatus!==200){res.writeHead(httpStatus,{'content-type':'application/json'});res.end(JSON.stringify({error:'private-upstream-response-canary'}));return;}void nodeHandler(req,res);});
  await new Promise<void>(resolve=>upstream.listen(0,'127.0.0.1',resolve));
  const app=Fastify();
  const hub:any={db,config:{maxBodyBytes:65536,origin:'http://localhost'},open:(s:string)=>s,audit:(e:any)=>events.push(e),setting:(k:string)=>settings.get(k),setSetting:(k:string,v:string)=>settings.set(k,v),requireClient:(req:any)=>{if(req.headers.authorization!=='Bearer agent-secret')throw Object.assign(new Error('unauthorized'),{statusCode:401});const c=db.prepare('SELECT * FROM client WHERE id=?').get('client') as any;if(c.status!=='active')throw Object.assign(new Error('revoked'),{statusCode:401});return c;}};
@@ -34,7 +35,7 @@ async function fixture(t:any) {
  const api=async(method:string,path:string,body?:any)=>{const res=await app.inject({method:method as any,url:path,headers:{'x-owner':'yes'},payload:body});assert.ok(res.statusCode<300,res.body);return res.json();};
  const add=async(connection_id?:string)=>{const {upstream:u}=await api('POST','/api/v1/upstreams',{name:'same-name',url:`http://127.0.0.1:${(upstream.address() as any).port}/mcp`,allowed_private_ips:['127.0.0.1'],connection_id});await api('POST',`/api/v1/upstreams/${u.id}/refresh`);await api('POST',`/api/v1/upstreams/${u.id}/approve`);return u;};
  const client=async(mode:any='auto')=>{const c=new Client({name:'test',version:'1'},{versionNegotiation:{mode}});await c.connect(new StreamableHTTPClientTransport(new URL(`http://127.0.0.1:${(app.server.address() as any).port}/mcp`),{requestInit:{headers:{authorization:'Bearer agent-secret'}}}));t.after(()=>c.close());return c;};
- return {db,app,hub,api,add,client,settings,events,authHeaders,beforeNextList:(callback:()=>void)=>{beforeList=callback;},setAnnotations:(value:Record<string,unknown>)=>{annotations=value;},setAdvertised:(value:boolean)=>{advertised=value;},setDelay:(n:number)=>{delay=n;},setReply:(s:string)=>{replyText=s;},setSchema:(schema:any)=>{inputSchema=schema;},getCalls:()=>calls,setDescription:(s:string)=>{description=s;}};
+ return {db,app,hub,api,add,client,settings,events,authHeaders,setHttpStatus:(value:number)=>{httpStatus=value;},beforeNextList:(callback:()=>void)=>{beforeList=callback;},setAnnotations:(value:Record<string,unknown>)=>{annotations=value;},setAdvertised:(value:boolean)=>{advertised=value;},setDelay:(n:number)=>{delay=n;},setReply:(s:string)=>{replyText=s;},setSchema:(schema:any)=>{inputSchema=schema;},getCalls:()=>calls,setDescription:(s:string)=>{description=s;}};
 }
 
 test('official modern and legacy clients obey deny-default, namespace, fresh grants and drift quarantine',async t=>{
@@ -182,4 +183,13 @@ test('JSON Schema 2020-12 discovery, invocation and write approvals enforce the 
  const invalid=await f.app.inject({method:'POST',url:'/api/v1/approvals',headers:{'x-owner':'yes'},payload:{client_id:'client',tool_id:tool.id,arguments:{text:'ok',extra:true}}});assert.equal(invalid.statusCode,400);
  const approval=await f.api('POST','/api/v1/approvals',{client_id:'client',tool_id:tool.id,arguments:{text:'ok'}});
  await client.callTool({name:tool.gateway_name,arguments:{text:'ok'},_meta:{wheremymcp_approval_id:approval.approval_id}});assert.equal(f.getCalls(),2);
+});
+
+
+test('upstream HTTP authentication failures become safe actionable discovery codes',async t=>{
+ for(const status of [401,403]){
+  const f=await fixture(t),u=await f.add();f.setHttpStatus(status);
+  const result=await f.app.inject({method:'POST',url:`/api/v1/upstreams/${u.id}/auto-approve-tools`,headers:{'x-owner':'yes'},payload:{trust_server:true}});
+  assert.equal(result.statusCode,403,result.body);assert.equal(result.json().message,'upstream_auth_required');assert.equal(result.body.includes('private-upstream-response-canary'),false);
+ }
 });

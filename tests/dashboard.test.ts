@@ -358,6 +358,26 @@ test('browser uses the actual app for claim, policy edits, credentials, client i
     await page.getByLabel('Owner password').fill('Changed-browser-password-456');
     await page.getByRole('button', {name: 'Log in', exact: true}).click();
     await page.getByRole('heading', {name: 'Settings & diagnostics'}).waitFor();
+    const unauthenticatedConnection=randomUUID(),unauthenticatedServer=randomUUID();
+    hub.db.prepare('INSERT INTO connection(id,provider,alias,status,created_at) VALUES(?,?,?,?,?)').run(unauthenticatedConnection,'bearer','needs-authorization','not_configured',Date.now());
+    hub.db.prepare('INSERT INTO upstream(id,name,url,connection_id,status,created_at) VALUES(?,?,?,?,?,?)').run(unauthenticatedServer,'Needs authorization','https://example.com/mcp',unauthenticatedConnection,'pending_review',Date.now());
+    await view('upstreams');
+    await page.locator('article').filter({has:page.getByRole('heading',{name:'Needs authorization',exact:true})}).getByRole('button',{name:'Auto approve tools',exact:true}).click();
+    await page.getByRole('checkbox',{name:'I trust the selected servers to describe their tools',exact:true}).check();
+    await page.getByRole('dialog').getByRole('button',{name:'Auto approve tools',exact:true}).click();
+    const failedApproval=page.getByRole('dialog');await failedApproval.getByRole('heading',{name:'Tool approval needs attention',exact:true}).waitFor();
+    assert.match(await failedApproval.innerText(),/Open Connections, authorize or update its account/);
+    assert.equal(await failedApproval.getByRole('button',{name:'Choose client tool access',exact:true}).count(),0);
+    assert.match(await failedApproval.innerText(),/No new tool access was granted/);
+    if(process.env.HUB_CAPTURE_DASHBOARD==='true')for(const [width,theme] of [[1280,'light'],[390,'dark']] as const){
+      await page.setViewportSize({width,height:900});await page.evaluate(theme=>document.documentElement.dataset.theme=theme,theme);
+      assert.equal(await failedApproval.evaluate(node=>node.scrollWidth<=node.clientWidth),true);
+      await failedApproval.screenshot({path:fileURLToPath(new URL(`../docs/evidence/tool-approval-auth-error-${width}.png`,import.meta.url))});
+    }
+    await failedApproval.getByRole('button',{name:'Review connections',exact:true}).click();await failedApproval.waitFor({state:'hidden'});
+    await page.getByRole('heading',{name:'Connections',exact:true}).waitFor();
+    hub.db.prepare('DELETE FROM upstream WHERE id=?').run(unauthenticatedServer);hub.db.prepare('DELETE FROM connection WHERE id=?').run(unauthenticatedConnection);
+    await page.setViewportSize({width:1280,height:900});
     const accessServer=randomUUID(),accessProfile=randomUUID(),accessClient=randomUUID(),accessTools:string[]=[];
     hub.db.prepare('INSERT INTO upstream(id,name,url,status,created_at) VALUES(?,?,?,?,?)').run(accessServer,'Project workspace','https://example.com/mcp','active',Date.now());
     hub.db.prepare('INSERT INTO profile VALUES(?,?,?,?,?)').run(accessProfile,'Research assistant','research-ui',0,Date.now());

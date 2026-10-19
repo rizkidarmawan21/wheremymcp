@@ -125,3 +125,12 @@ test('owner claim rejects symlink and expired bootstrap files before accepting a
     assert.equal((await claim()).statusCode,201,'A fresh regular bootstrap file still permits setup');
   }finally{await app.close();hub.close();rmSync(dir,{recursive:true,force:true});}
 });
+
+test('unexpected server errors stay generic and do not disclose exception secrets',async()=>{
+ const dir=mkdtempSync(join(tmpdir(),'hub-error-'));const hub=new Hub(':memory:',randomBytes(32),loadConfig({HUB_DATA_DIR:dir}));const app=await createApp(hub);
+ app.get('/test-private-error',async()=>{throw new Error('private-exception-credential-canary');});
+ try{
+  const result=await app.inject({url:'/test-private-error',headers:{host:'127.0.0.1:8080'}});
+  assert.equal(result.statusCode,500);assert.equal(result.json().message,'Request failed');assert.equal(result.body.includes('private-exception-credential-canary'),false);assert.ok(result.json().request_id);
+ }finally{await app.close();hub.close();rmSync(dir,{recursive:true,force:true});}
+});

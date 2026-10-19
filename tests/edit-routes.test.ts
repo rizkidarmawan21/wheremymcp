@@ -140,3 +140,19 @@ test('deleting a bound profile requires an explicit replacement and clears grant
  assert.equal((hub.db.prepare('SELECT status FROM client WHERE id=?').get(revoked.id) as {status:string}).status,'revoked','Moving clients must not reactivate revoked tokens');
  assert.equal(hub.db.prepare('SELECT count(*) FROM profile_grant WHERE profile_id=?').pluck().get(fallback),0,'Replacement access must not inherit deleted grants');
 });
+
+test('MCP discovery explains missing account authorization without exposing credentials',async t=>{
+ const {hub,send}=await ownerApp(t);
+ const connection=await send('POST','/api/v1/connections',{provider:'bearer',alias:'needs-login',secret:'credential-error-canary'});
+ const id=connection.json().connection.id;
+ const created=await send('POST','/api/v1/upstreams',{name:'Needs login',url:'https://example.com/mcp',connection_id:id});
+ assert.equal(created.statusCode,200,created.body);
+ hub.db.prepare("UPDATE connection SET status='not_configured',credential=NULL WHERE id=?").run(id);
+ const result=await send('POST',`/api/v1/upstreams/${created.json().upstream.id}/auto-approve-tools`,{trust_server:true});
+ assert.equal(result.statusCode,403,result.body);
+ assert.equal(result.json().error,'upstream_auth_required');
+ assert.match(result.json().message,/Connections/);
+ assert.match(result.json().message,/authoriz/i);
+ assert.equal(result.body.includes('credential-error-canary'),false);
+ assert.ok(result.json().request_id);
+});

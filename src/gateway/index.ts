@@ -77,7 +77,7 @@ export async function registerGateway(app:FastifyInstance,hub:Hub,requireOwner:p
  async function connected<T>(u:Upstream,signal:AbortSignal,work:(client:Client,secret:string)=>Promise<T>):Promise<T>{
   const auth=await credentials(u);const client=new Client({name:'wheremymcp',version:'0.1.0'},{inputRequired:{autoFulfill:false},versionNegotiation:{mode:'auto',probe:{timeoutMs:Math.min(u.timeout_ms,3000),maxRetries:0}},listMaxPages:8});
   const transport=new StreamableHTTPClientTransport(new URL(u.url),{requestInit:{headers:auth.headers,redirect:'manual'},onInsufficientScope:'throw',reconnectionOptions:{maxRetries:0,maxReconnectionDelay:1000,initialReconnectionDelay:1000,reconnectionDelayGrowFactor:1},fetch:(input,init)=>safeFetch(input, {...init,signal:AbortSignal.any([signal,...(init?.signal?[init.signal]:[])])},{allowedPrivateIps:JSON.parse(u.allowed_private_ips),timeoutMs:u.timeout_ms,maxResponseBytes:1_048_576,allowedOrigin:auth.allowedOrigin})});
-  try{try{await client.connect(transport,{signal,timeout:u.timeout_ms});}catch{throw Object.assign(new Error('upstream_connect_failure'),{upstream_id:u.id});}return await work(client,auth.secret);}finally{await client.close().catch(()=>{});}
+  try{try{await client.connect(transport,{signal,timeout:u.timeout_ms});}catch(error){const status=(error as {status?:number;statusCode?:number}).status??(error as {statusCode?:number}).statusCode;if(status===401||status===403)fail('upstream_auth_required',403);throw Object.assign(new Error('upstream_connect_failure'),{upstream_id:u.id});}return await work(client,auth.secret);}finally{await client.close().catch(()=>{});}
  }
  async function refresh(u:Upstream):Promise<{tools_count:number;names:string[]}>{
   const release=lock(u);const signal=AbortSignal.timeout(u.timeout_ms);try{
@@ -112,7 +112,7 @@ export async function registerGateway(app:FastifyInstance,hub:Hub,requireOwner:p
     for(const old of existing)if(!seen.has(old.name))hub.db.prepare('UPDATE tool SET enabled=0,approved_fingerprint=NULL WHERE id=?').run(old.id);
     hub.setSetting('import_requires_refresh:'+u.id,'false');failures.delete(u.id);if(u.status==='error')hub.db.prepare("UPDATE upstream SET status='pending_review' WHERE id=?").run(u.id);
    })();audit('upstream.refresh',u.id);return {tools_count:tools.length,names:tools.map(tool=>tool.name)};
-  }catch{hub.db.prepare("UPDATE upstream SET status='error' WHERE id=? AND status!='disabled'").run(u.id);audit('upstream.refresh',u.id,'failure','discovery_failed');fail('upstream_discovery_failed',502);}finally{release();}
+  }catch(error){hub.db.prepare("UPDATE upstream SET status='error' WHERE id=? AND status!='disabled'").run(u.id);const status=(error as {statusCode?:number}).statusCode;if(status===401||status===403){audit('upstream.refresh',u.id,'failure','authentication_required');fail('upstream_auth_required',403);}audit('upstream.refresh',u.id,'failure','discovery_failed');fail('upstream_discovery_failed',502);}finally{release();}
  }
  app.get('/api/v1/upstreams',{preHandler:requireOwner},async()=>({upstreams:(hub.db.prepare('SELECT * FROM upstream ORDER BY created_at,id').all() as Upstream[]).map(u=>({...u,allowed_private_ips:JSON.parse(u.allowed_private_ips)}))}));
  app.post('/api/v1/upstreams',{preHandler:requireOwner},async req=>{

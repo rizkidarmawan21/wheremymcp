@@ -385,7 +385,7 @@ async function autoApproveServers(servers) {
     if (!authenticated) return;
     const failed = results.filter(item => item.error), enabled = results.reduce((sum, item) => sum + (item.result?.approved || 0), 0);
     await route();
-    modal('Tool approval results', p(`Enabled ${enabled} tools across ${servers.length - failed.length} servers.`), failed.length ? section('Servers needing attention', failed.map(item => p(`${item.server.name}: ${item.error}`, 'error'))) : null, p('Next: open Default in Profiles & grants, select tools by server or Select all available, then Save access.', 'hint'), actions(action('Choose client tool access', () => { closeDialog(); location.hash = 'profiles'; }), action('Done', closeDialog)));
+    modal(failed.length && !enabled ? 'Tool approval needs attention' : 'Tool approval results', p(`Enabled ${enabled} tools across ${servers.length - failed.length} servers.`), failed.length ? section('Servers needing attention', failed.map(item => p(`${item.server.name}: ${item.error}`, 'error'))) : null, p(enabled ? 'Next: open Default in Profiles & grants, select tools by server or Select all available, then Save access.' : 'Resolve the server errors above, then retry Auto approve tools. No new tool access was granted.', 'hint'), actions(failed.length ? action('Review connections', () => { closeDialog(); location.hash = 'connections'; }) : null, enabled ? action('Choose client tool access', () => { closeDialog(); location.hash = 'profiles'; }) : null, action('Done', closeDialog)));
   }), progress);
 }
 function reviewTool(tool) {

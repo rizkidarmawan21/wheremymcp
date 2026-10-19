@@ -10,7 +10,7 @@ Verified locally on 18 October 2026 with Node.js 22.18.0, official `@modelcontex
 | Legacy Streamable HTTP | Official stateless legacy fallback | Real HTTP SDK client negotiates `2025-11-25`, legacy era; policy-filtered listing passes |
 | Remote upstream transport | Official SDK `Client` + `StreamableHTTPClientTransport`, modern probe then SDK legacy fallback | Real local fake remote server discovery and calls pass |
 | Native provider adapter | Root-owned `nativeTools(connectionId)` and `nativeCall(connectionId,name,args,signal)` | Fake native GitHub adapter passes the same gateway policy and approval flow |
-| Product clients | Codex, Claude, Cursor, Gemini configurations are produced by root | Installed product-client sessions have not been exercised; no product-version compatibility claim |
+| Product clients | Codex, Claude, Cursor, Gemini configurations are produced by root | Codex CLI 0.163.0 discovery was checked on 19 October as described below; other installed product clients remain unverified |
 
 The gateway is stateless. Clients must relist after catalog or policy changes. List results use private cache hints with zero TTL; every call checks current authorization independently. Tools are paginated in batches of 64. GET/DELETE sessions, resumable streams, subscriptions, server-initiated sampling/elicitation, legacy HTTP+SSE transport, prompts and resources are not exposed. Prompts/resources require their own explicit permissions before support can be enabled. Stdio execution remains disabled.
 
@@ -26,7 +26,7 @@ Writes and deletes require an owner-created approval bound to client ID, tool ID
 
 ## Limits and outbound network policy
 
-- At most 32 registered upstreams, 8 concurrent discovery/call operations globally and 1 per upstream. Excess calls fail immediately instead of entering an unbounded queue.
+- At most 128 registered upstreams, 8 concurrent discovery/call operations globally and 1 per upstream. Excess calls fail immediately instead of entering an unbounded queue.
 - Discovery accepts at most 8 pages and 256 tools per upstream. Metadata is bounded, names are validated and unsafe schema regex patterns or `patternProperties` are rejected. Input schemas use AJV with no remote schema loading.
 - Agent arguments are bounded to 64 KiB and depth 24. Responses are bounded to 1 MiB. Upstream deadlines range from 100 ms to 60 seconds; DNS resolution is bounded to 5 seconds. Streams are buffered within the byte/deadline limit, with a 2,048-event cap.
 - DNS answers are validated before connecting. Any forbidden answer rejects the destination; Undici socket DNS lookup is pinned to a validated address, preventing a second hostname resolution from rebinding the connection. HTTPS certificates still validate against the original hostname.
@@ -68,3 +68,7 @@ Signed compact JWT access tokens require issuer JWKS and are cryptographically v
 Refresh is serialized per connection, includes the resource indicator, rechecks connection/config/ciphertext before exchange and commit, and cannot overwrite local revocation. Local revoke clears credentials, state and pending approvals before any provider network call; decryption/network failures do not block that local action. Provider revocation returns a separate `succeeded`, `failed` or `not_supported` outcome.
 
 `npx tsx --test tests/remote-oauth.test.ts` passes 8 fake-fetch contract tests covering PKCE/resource binding, issuer/endpoints/S256 rejection, session/state replay, superseded flows, logout during exchange, serialized refresh versus revoke, signed JWT audience rejection and valid signature acceptance, configuration drift, and local revoke despite unreadable credentials. External authorization-server consent remains unverified.
+
+## Codex discovery follow-up, 19 October 2026
+
+The installed Codex CLI 0.163.0 app-server connected to the local gateway using the current client configuration. Its native `mcpServerStatus/list` method, scoped to `serverName: "wheremymcp"` with `detail: "toolsAndAuthOnly"`, returned 138 tools, `authStatus: "bearerToken"` and no tool-discovery error. The SDK independently listed the same 138 tools using modern and legacy negotiation. This verifies initialization and discovery; it does not establish every downstream tool invocation or the state of an already-running user terminal.

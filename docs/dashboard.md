@@ -134,3 +134,9 @@ The scale browser test registers **50 MCP entries against one authenticated loca
 Tool review shows a first-sentence preview capped at 240 characters. The full provider description remains available through a keyboard-accessible disclosure. Recognized `<examples>` and `<hints>` blocks appear as separate examples and usage notes; all content is rendered as text, never provider HTML. Profiles use the compact preview while search still covers the full description. Stored tool metadata is unchanged.
 
 The browser regression covers collapsed and expanded descriptions at 1280px and 390px in both themes, keyboard activation, wrapping and an HTML-injection canary. Fixture screenshots: [desktop preview](evidence/tool-description-1280.png), [mobile preview](evidence/tool-description-390.png), [expanded mobile](evidence/tool-description-expanded-390.png).
+
+## MCP discovery errors
+
+Missing, expired or rejected account authentication returns the controlled `upstream_auth_required` code with instructions to authorize or update the account in Connections. HTTP 401/403 from a remote MCP server receives the same safe classification. Other discovery failures explain endpoint, availability and schema checks without disclosing upstream exception text. Unexpected server errors remain generic.
+
+A completely failed approval batch displays **Tool approval needs attention**, its per-server cause and request ID, and **Review connections**. It does not suggest granting tools that were never enabled. Browser regression screenshots: [desktop failure](evidence/tool-approval-auth-error-1280.png), [mobile failure](evidence/tool-approval-auth-error-390.png).
