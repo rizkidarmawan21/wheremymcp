@@ -5,7 +5,7 @@ import { mkdtempSync, rmSync, readdirSync, statSync } from 'node:fs';
 import Database from 'better-sqlite3';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { Hub, hashToken } from '../src/core.js';
+import { Hub, hashToken, SCHEMA_VERSION } from '../src/core.js';
 import { loadConfig } from '../src/config.js';
 
 test('vault binds ciphertext to a record and rejects tampering or the wrong key', () => {
@@ -30,7 +30,7 @@ test('schema is versioned, singleton owner enforced, empty default profile has n
   const dir = mkdtempSync(join(tmpdir(), 'hub-core-'));
   const hub = new Hub(':memory:', randomBytes(32), loadConfig({ HUB_DATA_DIR: dir }));
   try {
-    assert.equal((hub.db.prepare('SELECT COUNT(*) AS n FROM schema_migration').get() as any).n, 2);
+    assert.equal((hub.db.prepare('SELECT COUNT(*) AS n FROM schema_migration').get() as any).n, SCHEMA_VERSION);
     assert.equal((hub.db.prepare('SELECT COUNT(*) AS n FROM profile WHERE is_default=1').get() as any).n, 1);
     assert.equal((hub.db.prepare('SELECT COUNT(*) AS n FROM profile_grant').get() as any).n, 0);
     assert.throws(() => hub.db.prepare('INSERT INTO owner(id,password_hash,created_at) VALUES (2,?,?)').run('hash', Date.now()));
@@ -65,7 +65,8 @@ test('v1 upgrade snapshots existing data, preserves valid grants and indexes his
         CREATE INDEX audit_ts ON audit_event(ts); CREATE INDEX audit_principal ON audit_event(principal,ts);
         DROP TABLE profile_grant;
         CREATE TABLE profile_grant(profile_id TEXT NOT NULL REFERENCES profile(id) ON DELETE CASCADE,tool_id TEXT NOT NULL REFERENCES tool(id) ON DELETE CASCADE,connection_id TEXT,action_class TEXT NOT NULL CHECK(action_class IN ('read','write','delete')),PRIMARY KEY(profile_id,tool_id));
-        DELETE FROM schema_migration WHERE version=2;
+        DELETE FROM schema_migration WHERE version>=2;
+        DROP TABLE management_client;
       `);
       legacy.prepare('INSERT INTO profile_grant VALUES(?,?,?,?)').run(profile,'valid','account','read');
       legacy.prepare('INSERT INTO profile_grant VALUES(?,?,?,?)').run(profile,'orphan','missing-account','read');

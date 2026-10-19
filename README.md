@@ -21,6 +21,7 @@ Development release. See [current limitations](#current-limitations) and the [ve
 | Profiles and clients | Select whole MCP servers or all available tools for a profile. Exact tools and account bindings stay enforced. Issue, rotate, expire or revoke client tokens. |
 | Multiple accounts | Keep account connections under distinct aliases and stable IDs, with encrypted provider credentials. |
 | One-use approvals | Authorize each write or delete call for one client, one tool and one exact argument object. |
+| Management MCP | Manage servers, tool approval, profiles and agent clients through the built-in `/mcp/manage` endpoint with separate scoped tokens. |
 | Owner dashboard | Manage connections, servers, grants, clients, skills, MFA, audit events and backups. |
 | Backup and portability | Create and download encrypted backups, restore offline, and preview credential-free configuration imports. |
 | Reviewed skills | Preview imported files, approve them, and explicitly plan/apply file sync through the CLI. |
@@ -94,6 +95,20 @@ Set `WHEREMYMCP_TOKEN` in the environment used to launch the client, using the t
 
 The dashboard also generates configurations for Claude Code, Cursor and Gemini, plus transport guidance for Hermes and other clients. Installed client versions still need their own compatibility check; config generation alone does not prove interoperability. The [compatibility report](docs/compatibility/gateway.md) records the official SDK transports exercised locally.
 
+## Manage WhereMyMCP through MCP
+
+Open **Management MCP** in the dashboard and issue a dedicated token. Read is selected by default; add Write for configuration changes and Delete for removal/revocation. Confirm with your owner password and authenticator code when MFA is enabled. Save the token once, then use the generated Codex configuration:
+
+```toml
+[mcp_servers.wheremymcp_management]
+url = "http://127.0.0.1:8080/mcp/manage"
+bearer_token_env_var = "WHEREMYMCP_MANAGEMENT_TOKEN"
+```
+
+Set `WHEREMYMCP_MANAGEMENT_TOKEN` in the environment used to launch Codex, then reload the client. This endpoint is built in; do not register it as an upstream or add profile grants. Ordinary gateway tokens cannot access it.
+
+Example request: “Register this MCP server, approve its current tools, and give Default access to that server.” Management Write can issue ordinary agent tokens and change access; treat it as configuration administration. Provider consent, owner security and management-token issuance stay in the dashboard. See [Management MCP](docs/management-mcp.md) for scopes, tools and limitations.
+
 ## Connections and integrations
 
 - Remote MCP endpoints can use bearer-token, API-key or remote OAuth connections.
@@ -147,6 +162,7 @@ The [implementation plan](docs/implementation-plan.md) and [E2E audit](docs/e2e-
 | [Installation](docs/install/README.md) | Docker, source setup, bootstrap recovery and deployment configuration. |
 | [Integrations](docs/integrations.md) | Remote MCP authentication and provider setup. |
 | [Dashboard](docs/dashboard.md) | Owner workflows, client configuration and UI behavior. |
+| [Management MCP](docs/management-mcp.md) | Built-in configuration tools, separate token setup, scopes and security boundaries. |
 | [Gateway compatibility](docs/compatibility/gateway.md) | Transports, authorization, approvals and resource limits. |
 | [Backup and restore](docs/install/backup-restore.md) | Encrypted backups, offline restore and key rotation. |
 | [Public deployment](docs/security/public-deployment.md) | HTTPS proxy, MFA and network boundaries. |

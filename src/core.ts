@@ -6,6 +6,7 @@ import type { FastifyRequest, preHandlerHookHandler } from 'fastify';
 import { verify } from 'argon2';
 import { TOTP, Secret } from 'otpauth';
 import type { HubConfig } from './config.js';
+import { AsyncLocalStorage } from 'node:async_hooks';
 
 export type OwnerGuard = preHandlerHookHandler;
 export interface AuditInput { principal?: string; action: string; resource?: string; outcome?: string; detail?: string; latency_ms?: number; }
@@ -13,7 +14,7 @@ export interface ClientRow { id: string; name: string; kind: string; profile_id:
 export function hashToken(value: string): string { return createHash('sha256').update(value).digest('hex'); }
 export function httpError(statusCode: number, message: string): Error & {statusCode:number} { return Object.assign(new Error(message), { statusCode }); }
 export function equalSecret(a: string, b: string): boolean { return timingSafeEqual(Buffer.from(hashToken(a)), Buffer.from(hashToken(b))); }
-export const SCHEMA_VERSION = 2;
+export const SCHEMA_VERSION = 3;
 
 const schema = `
 CREATE TABLE owner(id INTEGER PRIMARY KEY CHECK(id=1),password_hash TEXT NOT NULL,totp_secret TEXT,mfa_enabled INTEGER NOT NULL DEFAULT 0,last_totp_step INTEGER,created_at INTEGER NOT NULL);
@@ -72,6 +73,9 @@ const migrations: Migration[] = [
       CREATE INDEX profile_grant_connection ON profile_grant(connection_id);
     `);
   }},
+  { version: 3, up: db => {
+    db.exec(`CREATE TABLE management_client(id TEXT PRIMARY KEY,name TEXT NOT NULL,scopes TEXT NOT NULL,token_hash TEXT NOT NULL UNIQUE,status TEXT NOT NULL DEFAULT 'active',expires_at INTEGER NOT NULL,created_at INTEGER NOT NULL,last_used INTEGER);`);
+  }},
 ];
 
 function backupBeforeMigration(db: Database.Database, dbPath: string, version: number): void {
@@ -96,6 +100,7 @@ export class Hub {
   nativeTools?: (connectionId:string)=>Promise<Array<{name:string;description:string;inputSchema:Record<string,unknown>;annotations?:Record<string,unknown>}>>;
   nativeCall?: (connectionId:string,name:string,args:Record<string,unknown>,signal?:AbortSignal)=>Promise<{content:Array<{type:'text';text:string}>}>;
   private authInFlight = 0;
+  private readonly auditPrincipal = new AsyncLocalStorage<string>();
 
   constructor(dbPath: string, key: Buffer, config: HubConfig) {
     if (key.length !== 32) throw new Error('Master key must contain exactly 32 raw bytes');
@@ -171,12 +176,15 @@ export class Hub {
   setSetting(key: string, value: string): void { this.db.prepare('INSERT INTO settings VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value').run(key, value); }
 
   audit(event: AuditInput): void {
+    event={...event,principal:this.auditPrincipal.getStore()??event.principal};
     const code = (s: string | undefined, fallback: string) => (s || fallback).slice(0,160).replace(/[^a-zA-Z0-9_.:@/-]/g,'_');
     const profile=(this.db.prepare('SELECT profile_id FROM client WHERE id=?').get(event.principal||'') as {profile_id:string}|undefined)?.profile_id;
     const account=this.db.prepare('SELECT c.id,c.alias FROM connection c LEFT JOIN upstream u ON u.connection_id=c.id LEFT JOIN tool t ON t.upstream_id=u.id WHERE t.id=? OR c.id=? LIMIT 1').get(event.resource||'',event.resource||'') as {id:string;alias:string}|undefined;
     const detail=JSON.stringify({code:code(event.detail,''),...(profile?{profile_id:profile}:{}),...(account?{account_id:account.id,account_alias:account.alias}:{})});
     this.db.prepare('INSERT INTO audit_event(id,ts,principal,action,resource,outcome,detail,latency_ms,profile_id,account_id,account_alias) VALUES(?,?,?,?,?,?,?,?,?,?,?)').run(randomUUID(),Date.now(),code(event.principal,'system'),code(event.action,'unknown'),code(event.resource,''),code(event.outcome,'ok'),detail,event.latency_ms ?? null,profile??null,account?.id??null,account?.alias??null);
   }
+
+  withAuditPrincipal<T>(principal:string,work:()=>T):T { return this.auditPrincipal.run(principal,work); }
 
   requireClient(request: FastifyRequest): ClientRow {
     if (this.setting('emergency_stop') === 'true') throw httpError(503, 'Emergency stop is active');

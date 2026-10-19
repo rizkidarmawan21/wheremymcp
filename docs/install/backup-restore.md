@@ -30,7 +30,7 @@ npm run cli -- restore --file /safe/backup.umcp --target /new/state --key-file /
 
 Wrong keys, tampered manifests/ciphertext, unsupported schemas, corrupt SQLite, active runtime leases, symlink targets and nonempty destinations fail. Restore takes the same exclusive operation lock used at application startup. It validates SQLite integrity before atomic installation of the database file.
 
-Owner sessions and in-flight OAuth states are invalidated by default. `--invalidate-clients` also revokes all existing client tokens; issue new tokens after recovery. `--keep-sessions` explicitly preserves sessions and OAuth state and is discouraged for incident recovery. An installation with a claimed owner stays claimed; restore never creates a new bootstrap path.
+Owner sessions and in-flight OAuth states are invalidated by default. `--invalidate-clients` also revokes all existing ordinary agent and management tokens; issue new tokens after recovery. `--keep-sessions` explicitly preserves sessions and OAuth state and is discouraged for incident recovery. An installation with a claimed owner stays claimed; restore never creates a new bootstrap path.
 
 Point `HUB_DATA_DIR` at the restored directory and `HUB_MASTER_KEY_FILE` at its matching key. Start one process, log in using the existing owner, verify a connection and approved tool call, and confirm invalidated clients fail. Never restore over a running process or overwrite an existing state directory.
 

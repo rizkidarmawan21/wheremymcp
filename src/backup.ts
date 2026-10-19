@@ -54,6 +54,7 @@ function validateDatabase(path:string) {
     };
     for(const [table,columns] of Object.entries(required))db.prepare(`SELECT ${columns} FROM ${table} LIMIT 0`).all();
     if(version>=2)db.prepare('SELECT profile_id,account_id,account_alias FROM audit_event LIMIT 0').all();
+    if(version>=3)db.prepare('SELECT id,name,scopes,token_hash,status,expires_at,created_at,last_used FROM management_client LIMIT 0').all();
     if((db.pragma('foreign_key_check') as unknown[]).length)throw new Error('Backup foreign-key integrity check failed');
     return db;
   }catch(e){db.close();throw e;}
@@ -73,7 +74,7 @@ export async function restoreBackup(file:string,key:Buffer,target:string,options
       await writeFile(scratch,bytes,{mode:0o600,flag:'wx'});const db=validateDatabase(scratch);
       try {db.transaction(()=>{
         if(options.invalidateSessions!==false){db.prepare('DELETE FROM session').run();db.prepare('DELETE FROM oauth_state').run();}
-        if(options.invalidateClients)db.prepare("UPDATE client SET status='revoked'").run();
+        if(options.invalidateClients){db.prepare("UPDATE client SET status='revoked'").run();if(envelope.manifest.schema_version>=3)db.prepare("UPDATE management_client SET status='revoked'").run();}
       })();db.pragma('wal_checkpoint(TRUNCATE)');}finally{db.close();}
       const handle=await open(scratch,'r');try{await handle.sync();}finally{await handle.close();}
       await rename(scratch,join(destination,'hub.sqlite'));await syncDir(destination);

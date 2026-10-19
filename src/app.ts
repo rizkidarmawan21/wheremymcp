@@ -11,12 +11,15 @@ import { registerAdmin } from './admin.js';
 import { registerProviders } from './providers.js';
 import { registerGateway } from './gateway/index.js';
 import { registerOperations } from './backup.js';
+import {registerManagement,managementApiGuard,isManagementDispatch,withManagementAudit} from './management.js';
 
 export async function createApp(hub:Hub){
   const config=hub.config;
   if(config.publicMode && !(hub.db.prepare('SELECT mfa_enabled FROM owner WHERE id=1').get() as any)?.mfa_enabled)throw new Error('Public mode requires a claimed owner with MFA enabled; configure it in local mode first');
   const app=Fastify({logger:false,bodyLimit:config.maxBodyBytes,requestTimeout:30000,connectionTimeout:10000,keepAliveTimeout:5000,trustProxy:config.publicMode?config.trustedProxies:false,routerOptions:{maxParamLength:256}});
   app.decorateRequest('ownerSession',undefined);
+  // Injection starts a new async context; bind the manager principal when the delegated handler runs.
+  app.addHook('onRoute',options=>{const handler=options.handler;options.handler=function(request,reply){return withManagementAudit(hub,request,()=>handler.call(this,request,reply));};});
   await app.register(cookie);
   await app.register(rateLimit,{global:true,max:300,timeWindow:'1 minute',keyGenerator:req=>req.ip,cache:10000});
   const expected=new URL(config.origin);const hosts=new Set([expected.host]);
@@ -28,6 +31,7 @@ export async function createApp(hub:Hub){
     if(request.method==='GET' && ['/health/live','/health/ready'].includes(request.url)) return;
     if(!request.headers.host || !hosts.has(request.headers.host.toLowerCase()))throw httpError(403,'Host is not allowed');
     if(request.headers.origin && request.headers.origin!==config.origin)throw httpError(403,'Origin is not allowed');
+    if(isManagementDispatch(hub,request))return;
     const forwarded=Object.keys(request.headers).some(k=>k==='forwarded'||k.startsWith('x-forwarded-'));
     if(forwarded){
       const direct=request.raw.socket.remoteAddress?.replace(/^::ffff:/,'');
@@ -60,8 +64,8 @@ export async function createApp(hub:Hub){
     try{hub.db.prepare('SELECT 1').get();const key=await readFile(config.masterKeyFile);if(key.length!==32||!equalSecret(key.toString('hex'),hub.key.toString('hex')))throw new Error();return {status:'ready'};}
     catch{return reply.code(503).send({status:'unavailable'});}
   });
-  const guard=ownerGuard(hub);
-  await registerAuth(app,hub,guard);await registerAdmin(app,hub,guard);await registerProviders(app,hub,guard);await registerGateway(app,hub,guard);await registerOperations(app,hub,guard);
+  const owner=ownerGuard(hub),guard=managementApiGuard(hub,owner);
+  await registerAuth(app,hub,owner);await registerAdmin(app,hub,guard);await registerProviders(app,hub,guard);await registerGateway(app,hub,guard);await registerOperations(app,hub,owner);await registerManagement(app,hub,owner);
   await app.register(staticPlugin,{root:fileURLToPath(new URL('../public/',import.meta.url)),prefix:'/',index:['index.html'],setHeaders(reply){reply.header('Cache-Control','no-cache');}});
   let pruning=false;const interval=setInterval(()=>{if(pruning)return;pruning=true;try{hub.prune();}finally{pruning=false;}},60000);interval.unref();
   app.addHook('onClose',async()=>{clearInterval(interval);});

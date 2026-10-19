@@ -73,6 +73,40 @@ test('browser uses the actual app for claim, policy edits, credentials, client i
     await page.getByRole('heading', {name: 'Gateway policy is active'}).waitFor();
     await page.reload();
     await page.getByRole('heading', {name: 'Gateway policy is active'}).waitFor();
+    await view('management');
+    await page.getByRole('button',{name:'Issue management token',exact:true}).click();
+    const managementDialog=page.getByRole('dialog');
+    assert.equal(await managementDialog.getByRole('checkbox',{name:'Read configuration and diagnostics',exact:true}).isChecked(),true);
+    assert.equal(await managementDialog.getByRole('checkbox',{name:'Write configuration and issue agent tokens',exact:true}).isChecked(),false);
+    await managementDialog.getByLabel('Management client name').fill('Codex manager');
+    await managementDialog.getByRole('checkbox',{name:'Write configuration and issue agent tokens',exact:true}).check();
+    await managementDialog.getByLabel('Owner password').fill('Local-browser-password-123');
+    await managementDialog.getByRole('button',{name:'Issue management token',exact:true}).click();
+    await managementDialog.getByRole('heading',{name:'Save management token',exact:true}).waitFor();
+    const managementToken=(await managementDialog.locator('pre').first().innerText()).trim();assert.match(managementToken,/^wmm_/);
+    assert.match(await managementDialog.innerText(),/WHEREMYMCP_MANAGEMENT_TOKEN/);
+    const managerSdk=new Client({name:'browser-management',version:'1'});sdkClients.push(managerSdk);
+    await managerSdk.connect(new StreamableHTTPClientTransport(new URL(config.origin+'/mcp/manage'),{requestInit:{headers:{authorization:'Bearer '+managementToken}}}));
+    const managedProfile=await managerSdk.callTool({name:'profile_create',arguments:{name:'Browser managed profile'}});assert.notEqual(managedProfile.isError,true);
+    const managedProfileId=JSON.parse(managedProfile.content[0].type==='text'?managedProfile.content[0].text:'{}').profile.id;
+    hub.db.prepare('DELETE FROM profile WHERE id=?').run(managedProfileId);
+    await managementDialog.getByRole('button',{name:'I saved it',exact:true}).click();await managementDialog.waitFor({state:'hidden'});
+    if(process.env.HUB_CAPTURE_DASHBOARD==='true')for(const [width,theme] of [[1280,'light'],[390,'dark']] as const){
+      await page.setViewportSize({width,height:900});if(await page.evaluate(()=>document.documentElement.dataset.theme)!==theme)await page.locator('#theme-toggle').click();
+      assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth),true);
+      await page.screenshot({path:fileURLToPath(new URL(`../docs/evidence/management-${width}.png`,import.meta.url)),fullPage:true});
+    }
+    await page.setViewportSize({width:1280,height:900});
+    await page.getByRole('button',{name:'Rotate management token',exact:true}).click();
+    await managementDialog.getByLabel('Owner password').fill('Local-browser-password-123');
+    await managementDialog.getByRole('button',{name:'Rotate management token',exact:true}).click();
+    await managementDialog.getByRole('heading',{name:'Save management token',exact:true}).waitFor();
+    const nextManagementToken=(await managementDialog.locator('pre').first().innerText()).trim();assert.notEqual(nextManagementToken,managementToken);
+    await assert.rejects(managerSdk.listTools());
+    await managementDialog.getByRole('button',{name:'I saved it',exact:true}).click();await managementDialog.waitFor({state:'hidden'});
+    await page.getByRole('button',{name:'Revoke management token',exact:true}).click();
+    await managementDialog.getByRole('button',{name:'Revoke management token',exact:true}).click();await managementDialog.waitFor({state:'hidden'});
+    assert.equal((hub.db.prepare('SELECT status FROM management_client WHERE name=?').get('Codex manager') as any).status,'revoked');
     await view('connections');
     await page.getByRole('button', {name: 'Add connection'}).click();
     await page.getByLabel('Account alias').fill('browser-private-account');
@@ -234,7 +268,7 @@ test('browser uses the actual app for claim, policy edits, credentials, client i
     for (const [width, theme] of [[1280, 'light'], [390, 'dark']] as const) {
       await page.setViewportSize({width, height: 900});
       if (await page.locator('html').getAttribute('data-theme') !== theme) await page.locator('#theme-toggle').click();
-      for (const pageName of ['overview', 'upstreams', 'tools', 'connections', 'profiles', 'clients', 'approvals', 'skills', 'security', 'audit', 'settings', 'backups']) {
+      for (const pageName of ['overview', 'upstreams', 'tools', 'connections', 'profiles', 'clients', 'management', 'approvals', 'skills', 'security', 'audit', 'settings', 'backups']) {
         await view(pageName);
         assert.equal(await page.getByRole('heading', {name: 'Could not load this view'}).count(), 0, `${pageName} should load against the actual API`);
         assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true, `${pageName} ${width}px overflow`);

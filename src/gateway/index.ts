@@ -5,6 +5,7 @@ import {Client,StreamableHTTPClientTransport} from '@modelcontextprotocol/client
 import {Ajv} from 'ajv';
 import {Ajv2020} from 'ajv/dist/2020.js';
 import safeRegex from 'safe-regex2';
+import {z} from 'zod';
 import type {Hub} from '../core.js';
 import {safeFetch,validateTarget} from './network.js';
 export {safeFetch,validateTarget} from './network.js';
@@ -168,7 +169,18 @@ export async function registerGateway(app:FastifyInstance,hub:Hub,requireOwner:p
   hub.db.prepare('DELETE FROM settings WHERE key=?').run(`import_requires_refresh:${u.id}`);
   audit('upstream.delete',u.id);return {deleted:true};
  });
- app.get('/api/v1/tools',{preHandler:requireOwner},async()=>({tools:(hub.db.prepare('SELECT tool.*,upstream.connection_id,upstream.name AS upstream_name,upstream.status AS upstream_status FROM tool JOIN upstream ON upstream.id=tool.upstream_id ORDER BY gateway_name').all() as ToolRow[]).map(parseTool)}));
+ app.get('/api/v1/tools',{preHandler:requireOwner},async req=>{
+  if((req.query as any).limit===undefined)return {tools:(hub.db.prepare('SELECT tool.*,upstream.connection_id,upstream.name AS upstream_name,upstream.status AS upstream_status FROM tool JOIN upstream ON upstream.id=tool.upstream_id ORDER BY gateway_name').all() as ToolRow[]).map(parseTool)};
+  const q=z.object({limit:z.coerce.number().int().min(1).max(100),offset:z.coerce.number().int().min(0).max(100000).default(0),server_id:z.string().uuid().optional(),search:z.string().max(200).optional(),include_metadata:z.enum(['true','false']).default('false')}).strict().parse(req.query);
+  const where:string[]=[],values:string[]=[];
+  if(q.server_id){where.push('tool.upstream_id=?');values.push(q.server_id);}
+  if(q.search){where.push("instr(lower(tool.name||' '||tool.description),lower(?))>0");values.push(q.search);}
+  const source=' FROM tool JOIN upstream ON upstream.id=tool.upstream_id'+(where.length?' WHERE '+where.join(' AND '):'');
+  const total=hub.db.prepare('SELECT count(*)'+source).pluck().get(...values) as number;
+  const columns=q.include_metadata==='true'?'tool.*,upstream.connection_id,upstream.name AS upstream_name,upstream.status AS upstream_status':'tool.id,tool.name,tool.upstream_id AS server_id,upstream.name AS server,upstream.connection_id,tool.risk,tool.enabled,substr(tool.description,1,240) AS description';
+  const rows=hub.db.prepare('SELECT '+columns+source+' ORDER BY tool.gateway_name LIMIT ? OFFSET ?').all(...values,q.limit,q.offset) as ToolRow[];
+  return {items:rows.map(row=>q.include_metadata==='true'?parseTool(row):{...row,enabled:!!row.enabled}),total,next_offset:q.offset+q.limit<total?q.offset+q.limit:null};
+ });
  app.post('/api/v1/tools/:id/approve',{preHandler:requireOwner},async req=>{const tool=getTool(identifier(req));if(hub.setting('import_requires_refresh:'+tool.upstream_id)==='true')fail('live_refresh_required',403);const b=body(req);if(!['read','write','delete'].includes(String(b.risk))||typeof b.enabled!=='boolean')fail('invalid_tool_approval');hub.db.prepare('UPDATE tool SET risk=?,enabled=?,approved_fingerprint=fingerprint,previous_metadata=NULL WHERE id=?').run(b.risk,b.enabled?1:0,tool.id);hub.db.prepare('DELETE FROM approval WHERE tool_id=?').run(tool.id);audit('tool.approve',tool.id);return {tool:parseTool(getTool(tool.id))};});
  app.post('/api/v1/approvals',{preHandler:requireOwner},async req=>{const b=body(req);if(typeof b.client_id!=='string'||typeof b.tool_id!=='string'||!b.arguments||typeof b.arguments!=='object'||Array.isArray(b.arguments))fail('invalid_approval');const tool=getTool(b.tool_id);const c=hub.db.prepare('SELECT * FROM client WHERE id=?').get(b.client_id) as ClientRow|undefined;if(!c)fail('invalid_client');authorization(c,tool);if(!['write','delete'].includes(tool.risk))fail('approval_not_required');const schema=JSON.parse(tool.input_schema);if(!schemaValidator(schema).compile(schema)(b.arguments))fail('invalid_arguments');const ttl=Number(b.ttl_seconds??120);if(!Number.isInteger(ttl)||ttl<1||ttl>300)fail('invalid_approval_ttl');const id=randomUUID();hub.db.prepare('INSERT INTO approval VALUES(?,?,?,?,?,NULL)').run(id,c.id,tool.id,argumentHash(b.arguments),Date.now()+ttl*1000);audit('approval.create',id);return {approval_id:id};});
 

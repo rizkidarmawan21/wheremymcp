@@ -14,6 +14,7 @@ const pages = {
   connections: ['Connections', 'Keep account identities and credentials distinct. Tool grants stay bound to stable connection IDs.'],
   profiles: ['Profiles & grants', 'A profile decides which tools an agent client can use. Allow only the tools it needs; everything else stays blocked.'],
   clients: ['Agent clients', 'Issue a separate profile-bound token for each client. Tokens appear only once.'],
+  management: ['Management MCP', 'Manage WhereMyMCP from your agent through its built-in MCP endpoint. Separate tokens control read, write and delete access.'],
   approvals: ['One-use approvals', 'Authorize one exact write or delete call. The client, tool and argument object must match.'],
   skills: ['Reviewed skills', 'Import files for inspection. Approval does not execute content or install hooks.'],
   security: ['Security', 'Manage owner MFA and the gateway emergency stop.'],
@@ -257,7 +258,7 @@ function shell(active) {
 }
 function initNav() {
   nav.replaceChildren();
-  for (const [label, keys] of [['Workspace', ['overview']], ['Registry', ['upstreams', 'connections', 'tools', 'skills']], ['Access', ['profiles', 'clients', 'approvals']], ['Operations', ['security', 'audit', 'backups', 'settings']]]) {
+  for (const [label, keys] of [['Workspace', ['overview']], ['Registry', ['upstreams', 'connections', 'tools', 'skills']], ['Access', ['profiles', 'clients', 'management', 'approvals']], ['Operations', ['security', 'audit', 'backups', 'settings']]]) {
     nav.append(p(label, 'nav-caption'));
     for (const key of keys) nav.append(el('a', {href: `#${key}`, 'data-page': key}, pages[key][0]));
   }
@@ -620,6 +621,20 @@ const renderers = {
         revealToken('Save replacement token', rotated.token, 'Shown once. The old client token has been invalidated.', route);
       }, 'Rotate token', false), '', 'refresh'),
       action('Revoke', () => confirmAction('Revoke client', 'This client loses gateway access immediately.', () => api(idPath('clients', row.id, '/revoke'), 'POST'), 'Revoke client'), 'danger', 'ban')));
+  },
+  async management(target) {
+    const result = await api('/api/v1/management/clients');
+    const verificationFields = [{name: 'password', label: 'Owner password', type: 'password', required: true, autocomplete: 'current-password'}, {name: 'totp', label: 'Authenticator code', required: mfaEnabled, inputmode: 'numeric', autocomplete: 'one-time-code', hint: 'Required when MFA is enabled.'}];
+    const revealManagement = data => modal('Save management token', p('Shown once. This credential controls gateway configuration according to its scopes. Store it separately from agent tokens.'), code(data.token), actions(action('Copy management token', () => copy(data.token))), p('Set WHEREMYMCP_MANAGEMENT_TOKEN in the environment used to launch Codex, then add this configuration. Reload your MCP client after saving.', 'hint'), code(data.config), actions(action('Copy management config', () => copy(data.config)), action('I saved it', async () => { closeDialog(); await route(); }, 'primary')));
+    heading(target, 'management', action('Issue management token', () => modal('Issue management token', p('Read inspects configuration. Write can change servers, replace profile access and issue agent tokens. Delete can remove servers/profiles and revoke agent clients. Provider consent and owner security remain in the dashboard.'), form([{name: 'name', label: 'Management client name', required: true, placeholder: 'e.g. codex-manager'}, {name: 'read', label: 'Read configuration and diagnostics', type: 'checkbox', value: true}, {name: 'write', label: 'Write configuration and issue agent tokens', type: 'checkbox'}, {name: 'delete', label: 'Delete servers/profiles and revoke clients', type: 'checkbox'}, {name: 'ttl_days', label: 'Expires after days', type: 'number', value: 30, min: 1, max: 365, required: true}, ...verificationFields], 'Issue management token', async data => {
+      const scopes = ['read', 'write', 'delete'].filter(scope => data[scope]);
+      if (!scopes.length) throw new Error('Choose at least one management scope.');
+      const created = await api('/api/v1/management/clients', 'POST', {name: data.name, scopes, ttl_days: data.ttl_days, password: data.password, ...(data.totp ? {totp: data.totp} : {})});
+      revealManagement(created);
+    })), 'primary'));
+    target.append(section('Built-in management endpoint', p('Available on every instance. No MCP server registration or profile grant is required for this endpoint.'), code(result.endpoint), p(`${result.tools_count} management tools. Each token sees only tools allowed by its scopes. Ordinary agent tokens cannot use this endpoint.`, 'hint'), details('Codex configuration', code(result.config)), p('Example: “Register this MCP server, approve its current tools, then give Default access to that server.”', 'hint')));
+    if (!result.clients.length) target.append(empty('No management clients yet. Issue a dedicated token to let an agent manage this instance.'));
+    for (const row of result.clients) target.append(summaryRow(row.name, row.status, [`Scopes: ${row.scopes.join(', ')}`, `Expires: ${time(row.expires_at)}`, `Last used: ${time(row.last_used)}`], row.status === 'active' && row.expires_at > Date.now() ? action('Rotate management token', () => modal('Rotate management token', p('The old management token stops working immediately.'), form(verificationFields, 'Rotate management token', async data => revealManagement(await api(idPath('management/clients', row.id, '/rotate'), 'POST', data))))) : null, row.status === 'active' ? action('Revoke management token', () => confirmAction('Revoke management token', 'This management client loses access immediately.', () => api(idPath('management/clients', row.id, '/revoke'), 'POST'), 'Revoke management token'), 'danger') : null));
   },
   async approvals(target) {
     const [clients, tools] = await Promise.all([api('/api/v1/clients'), api('/api/v1/tools')]);

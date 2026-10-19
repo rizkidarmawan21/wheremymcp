@@ -22,3 +22,5 @@ Direction authorized for implementation: a utility dashboard for the single owne
 - Bulk setup: server selection and one batch approval replace per-tool setup work for trusted MCPs. Permission groups collapse by server and expose group selection plus a global available-tools action. Manual review renders 50 filtered rows at a time. Progress, rate-limit waiting and partial failures stay visible; setup completion uses actual enabled tools and grants.
 
 - Tool descriptions: registry rows show a bounded first-sentence preview so provider instructions do not dominate the list. Native disclosure reveals the complete description, with provider examples and hints in separate text-only sections. Tool access rows use the same compact preview; stored metadata and search remain complete.
+
+- Management MCP: a separate Access destination explains the built-in endpoint before token issuance. Read starts selected; Write/Delete require explicit selection. Existing forms and one-time secret dialogs keep scope, expiry and owner verification visible. Token rows expose current status, expiry, last use, rotate and revoke.

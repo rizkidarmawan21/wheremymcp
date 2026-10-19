@@ -21,6 +21,7 @@ test('encrypted online backup restores a consistent database; wrong key/tamperin
   db.prepare('INSERT INTO client(id,name,kind,profile_id,token_hash,status,created_at) VALUES(?,?,?,?,?,?,0)').run('client','client','codex',profileId,'token-hash','active');
   db.prepare('INSERT INTO session VALUES(?,?,?,?,?,?,?)').run('session','session-hash','csrf-hash',hub.seal('csrf','csrf:session'),0,0,999999);
   db.prepare('INSERT INTO oauth_state VALUES(?,?,?,?,?)').run('state','one',hub.seal('pkce','oauth:state'),'session',999999);
+  db.prepare('INSERT INTO management_client(id,name,scopes,token_hash,expires_at,created_at) VALUES(?,?,?,?,?,?)').run('management','Management','["read"]','management-token-hash',Date.now()+60000,Date.now());
   const backup = await createEncryptedBackup(hub); const bytes = await readFile(join(dir,'backups',backup.name));
   assert.equal(bytes.includes(Buffer.from('secret-canary')),false);
   await assert.rejects(restoreBackup(join(dir,'backups',backup.name),randomBytes(32),join(dir,'wrong')));
@@ -29,10 +30,11 @@ test('encrypted online backup restores a consistent database; wrong key/tamperin
   await assert.rejects(restoreBackup(join(dir,'tampered'),key,join(dir,'tampered-target')));
   const target = join(dir,'restore'); await restoreBackup(join(dir,'backups',backup.name),key,target,{invalidateClients:true});
   const restored = new Database(join(target,'hub.sqlite'));
+  assert.equal(restored.prepare('SELECT status FROM management_client').pluck().get(),'revoked');
   assert.equal(restored.prepare('SELECT credential FROM connection').pluck().get(),'secret-canary');
   assert.equal(restored.prepare('SELECT count(*) FROM session').pluck().get(),0);assert.equal(restored.prepare('SELECT count(*) FROM oauth_state').pluck().get(),0);assert.equal(restored.prepare('SELECT status FROM client').pluck().get(),'revoked');restored.close();
   const preserved=join(dir,'preserved');await restoreBackup(join(dir,'backups',backup.name),key,preserved,{invalidateSessions:false});
-  const kept=new Database(join(preserved,'hub.sqlite'));assert.equal(kept.prepare('SELECT count(*) FROM session').pluck().get(),1);assert.equal(kept.prepare('SELECT status FROM client').pluck().get(),'active');kept.close();
+  const kept=new Database(join(preserved,'hub.sqlite'));assert.equal(kept.prepare('SELECT status FROM management_client').pluck().get(),'active');assert.equal(kept.prepare('SELECT count(*) FROM session').pluck().get(),1);assert.equal(kept.prepare('SELECT status FROM client').pluck().get(),'active');kept.close();
   await assert.rejects(restoreBackup(join(dir,'backups',backup.name),key,target)); db.close();
 });
 test('operations lock excludes concurrent mutations and offline mode rejects runtime',async()=>{

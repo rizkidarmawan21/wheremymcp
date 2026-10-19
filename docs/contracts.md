@@ -11,6 +11,7 @@ Root creates these tables in `src/core.ts` before workers run. All opaque IDs ar
 - `recovery_code(hash TEXT PRIMARY KEY)`.
 - `profile(id TEXT PRIMARY KEY, name TEXT, slug TEXT UNIQUE, is_default INTEGER, created_at INTEGER)`.
 - `client(id TEXT PRIMARY KEY, name TEXT, kind TEXT, profile_id TEXT REFERENCES profile, token_hash TEXT UNIQUE, status TEXT, expires_at INTEGER, created_at INTEGER, last_used INTEGER)`.
+- `management_client(id TEXT PRIMARY KEY, name TEXT, scopes TEXT JSON array, token_hash TEXT UNIQUE, status TEXT, expires_at INTEGER NOT NULL, created_at INTEGER, last_used INTEGER)`; separate configuration-administration tokens, never ordinary gateway tokens.
 - `connection(id TEXT PRIMARY KEY, provider TEXT, alias TEXT UNIQUE, status TEXT, identity TEXT, scopes TEXT JSON array, credential TEXT encrypted, config TEXT JSON object, expires_at INTEGER, created_at INTEGER)`.
 - `oauth_state(id TEXT PRIMARY KEY, connection_id TEXT, verifier TEXT encrypted, session_id TEXT, expires_at INTEGER)`.
 - `upstream(id TEXT PRIMARY KEY, name TEXT, url TEXT, connection_id TEXT REFERENCES connection, status TEXT, allowed_private_ips TEXT JSON array, timeout_ms INTEGER, created_at INTEGER)`.
@@ -20,7 +21,7 @@ Root creates these tables in `src/core.ts` before workers run. All opaque IDs ar
 - `audit_event(id TEXT PRIMARY KEY, ts INTEGER, principal TEXT, action TEXT, resource TEXT, outcome TEXT, detail TEXT, latency_ms INTEGER, profile_id TEXT, account_id TEXT, account_alias TEXT)`; detail contains controlled codes only. Profile/account fields support indexed audit filters and historical alias search.
 - `skill(id TEXT PRIMARY KEY, name TEXT, source TEXT, digest TEXT, content TEXT JSON file map, approved INTEGER, created_at INTEGER)`.
 - `settings(key TEXT PRIMARY KEY, value TEXT)`.
-- `schema_migration(version INTEGER PRIMARY KEY, applied_at INTEGER)`; current schema version 2. Every upgrade runs in a transaction after checkpointing and writing a mode-0600 pre-migration SQLite copy.
+- `schema_migration(version INTEGER PRIMARY KEY, applied_at INTEGER)`; current schema version 3. Every upgrade runs in a transaction after checkpointing and writing a mode-0600 pre-migration SQLite copy.
 
 ## Core types
 
@@ -83,3 +84,18 @@ Approval, fingerprint pinning, pending-approval invalidation, server activation 
 The dashboard processes selected servers with four concurrent requests and reports partial failures. Only an explicit HTTP 429 rejection can trigger one retry after `Retry-After`; upstream tool calls are never retried by this flow. The registry limit is 128 servers, discovery is bounded to 256 tools per server, and each profile accepts at most 5000 exact grants.
 
 MCP tool listing joins current client, profile, grants, tools, servers and account state in one query per page. Refresh-required flags are cached only within that request, once per upstream; later requests recheck current policy. Tool-call authorization remains checked for each invocation.
+
+## Management MCP contracts
+
+`POST /mcp/manage` implements scoped MCP tool discovery and invocation. GET/DELETE require a valid management bearer token and return 405; transport is stateless. Tokens are rechecked for each request/call. Read, Write and Delete are independent scopes. Full catalog and delegation boundaries: [Management MCP](management-mcp.md).
+
+Owner-session and CSRF protected token APIs:
+
+- `GET /api/v1/management/clients` returns `{endpoint,config,tools_count,clients}` with metadata only. Expired active rows are reported as `expired`.
+- `POST /api/v1/management/clients` accepts `{name,scopes,ttl_days?,password,totp?}` and returns `{client,token,endpoint,config}` once; expiry defaults to 30 days, maximum 365.
+- `POST /api/v1/management/clients/:id/rotate` accepts `{password,totp?}` and returns `{token,endpoint,config}` once. Revoked/expired clients cannot rotate.
+- `POST /api/v1/management/clients/:id/revoke` revokes immediately.
+
+Issuance/rotation require owner step-up and are rate limited to 8 requests/minute. No management MCP tool exposes these owner-token APIs.
+
+`GET /api/v1/tools?limit=25&offset=0&server_id=UUID&search=TEXT&include_metadata=false` selects a bounded database page and returns `{items,total,next_offset}`. Maximum limit 100. Compact rows omit tool schemas and include readable server/name plus a bounded description. `include_metadata=true` returns parsed metadata for that page. Omitting `limit` retains the dashboard's existing `{tools}` response.

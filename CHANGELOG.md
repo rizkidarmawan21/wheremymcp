@@ -2,6 +2,7 @@
 
 ## Unreleased — 0.1.0 candidate
 
+- Built-in management MCP endpoint with separate expiring Read/Write/Delete tokens, owner step-up, audited configuration operations and bulk server/profile setup.
 - Single-owner dashboard, encrypted credential vault, MFA and scoped client profiles.
 - Remote MCP registry, tool review, routing and policy enforcement.
 - Manual reviewed skill imports and preview/apply CLI sync with backups.
