@@ -27,7 +27,7 @@
     "argon2": "0.45.1",
     "better-sqlite3": "13.0.3",
     "fastify": "5.12.7",
-    "jose": "6.2.12",
+    "jose": "6.2.13",
     "otpauth": "9.5.2",
     "qrcode": "^1.5.4",
     "safe-regex2": "5.1.2",
