@@ -21,7 +21,7 @@
     "@fastify/static": "10.1.6",
     "@modelcontextprotocol/client": "2.3.1",
     "@modelcontextprotocol/fastify": "2.0.1",
-    "@modelcontextprotocol/node": "2.1.1",
+    "@modelcontextprotocol/node": "2.1.2",
     "@modelcontextprotocol/server": "2.3.1",
     "ajv": "8.20.0",
     "argon2": "0.45.1",
